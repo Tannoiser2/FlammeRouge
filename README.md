@@ -191,15 +191,25 @@ Dopo lo schieramento si tiene l'asta:
   offerte, poi tutti rimescolano.
 
 ## CPU
-La CPU valuta ogni carta in base a:
-- avanzamento, con un peso maggiore nel finale (soprattutto per lo sprinteur);
-- economia del mazzo: le carte alte si tengono, i 9 dello sprinteur servono per la volata;
-- carte fatica da scaricare quando si è al riparo o in salita;
-- carte sprecate dal limite in salita e caselle perse per strada chiusa;
-- posizione dopo la mossa: a ruota, a una casella dalla scia, scoperti davanti;
-- distanza dalla testa della corsa.
+Nel menu, alla voce **Computer**, si sceglie il livello delle squadre guidate dal computer.
 
-Contro la CPU precedente vince circa l'83% delle corse.
+- **Normale**: valuta ogni carta sulla posizione di adesso (avanzamento, economia del mazzo,
+  fatica da scaricare, salite, scia, distanza dalla testa della corsa).
+- **Difficile** ed **Esperto**: per ogni carta in mano immaginano molti finali di corsa, fino
+  al traguardo (Monte Carlo), e scelgono quella che in media porta al miglior piazzamento della
+  squadra. Nei finali immaginati:
+  - le carte degli altri si pescano a caso tra quelle che hanno davvero ancora, perché l'ordine
+    dei mazzi è sconosciuto;
+  - gli altri corridori giocano con una versione rapida della CPU normale;
+  - le carte nettamente peggiori vengono scartate dopo pochi finali.
+  Difficile immagina 16 finali per carta (al massimo 0,7 s per decisione), Esperto 32 (1,5 s).
+  Sul browser i tempi sono più lunghi e la CPU si ferma al limite di tempo.
+- Il computer sceglie le sue carte prima dei giocatori, così non può conoscere le loro.
+
+In corse simulate a 4 squadre (due per tipo), la CPU Difficile vince il 70% delle corse contro
+la Normale. La prova si ripete con
+`godot --headless --path . -s res://tests/ai_bench.gd -- 2 1 40 16`
+(livello A, livello B, numero di corse, finali per carta).
 
 ## Tour a tappe (regole del Grand Tour)
 Nel menu "Percorso → Tour" si sceglie il tour: Tour de France 2018 con le 21 carte tappa di

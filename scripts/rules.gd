@@ -171,6 +171,7 @@ func draw_hand(r: Dictionary) -> Array:
 func choose(r: Dictionary, card: Dictionary) -> void:
 	var h: Array = r["hand"]
 	h.erase(card)
+	r["ct"] = round
 	if not card.get("ex", false):
 		if not r.has("played"):
 			r["played"] = []
@@ -854,11 +855,222 @@ func carry_exhaustion(r: Dictionary) -> int:
 
 ## CPU: valuta ogni carta per avanzamento, posizione dopo la mossa ed economia del mazzo.
 func ai_pick(r: Dictionary) -> Dictionary:
+	if _sim and sim_fast:
+		return _fast_pick(r)
+	if int(r["team"].get("level", 1)) >= 2 and not _sim:
+		return _mc_pick(r)
 	var old = _ctx
 	_ctx = r
 	var c := _ai_pick(r)
 	_ctx = old
 	return c
+
+# ---------- CPU difficile: simulazione dei finali possibili (Monte Carlo) ----------
+# Per ogni carta in mano si giocano in testa molti finali, fino al traguardo: gli avversari pescano
+# a caso dalle carte che hanno davvero ancora (l'ordine dei mazzi è sconosciuto) e giocano con la
+# CPU normale. Vince la carta che in media porta il miglior piazzamento della squadra.
+
+var _sim := false
+var sim_fast := true       # nei finali simulati gli altri giocano con una versione rapida della CPU
+var mc_prune := true       # scarta presto le carte nettamente peggiori
+
+## CPU rapida per i finali simulati: stessi criteri della CPU normale, senza calcolare le strade chiuse.
+func _fast_pick(r: Dictionary) -> Dictionary:
+	var d := dist_to_finish(r)
+	var sprinter: bool = r["type"] == "V"
+	var sheltered := front_occupied(r["pos"])
+	var up: bool = track.terrain(r["pos"]) == "up"
+	var best := {}
+	var best_s := -1e9
+	for c in r["hand"]:
+		var v: int = c["v"]
+		var m := v
+		if up:
+			m = mini(v, 5)
+		elif v > 5 and d > 9:
+			m = eff_move(r, v)
+		var s := float(m)
+		if m >= d:
+			s = 100.0 + m
+		else:
+			if c["ex"]:
+				s += 1.5 + (2.0 if sheltered or up else 0.0)
+			elif sprinter and v == 9 and d > 18:
+				s -= 4.0
+			elif v >= 6 and d > 25:
+				s -= (v - 5) * 0.6
+			s -= (v - m) * 1.0
+		s += rng.randf() * 1.5
+		if s > best_s:
+			best_s = s
+			best = c
+	return best
+var mc_samples := 16       # finali simulati per carta
+var mc_max_ms := 900       # tempo massimo per decisione (millisecondi)
+
+const _SNAP_KEYS := ["pos", "lane", "chosen", "finished", "fin_round", "fin_over", "fin_lane", "fin_place",
+	"min", "sec", "tp", "crashed", "gone", "ct"]
+
+func _snap() -> Dictionary:
+	var rs: Array = []
+	for r in riders:
+		var d := {}
+		for k in _SNAP_KEYS:
+			d[k] = r.get(k)
+		d["deck"] = r["deck"].duplicate()
+		d["recycled"] = r["recycled"].duplicate()
+		d["hand"] = r["hand"].duplicate()
+		d["played"] = r.get("played", []).duplicate()
+		rs.append(d)
+	var td: Array = []
+	for t in teams:
+		td.append(t["deck"].duplicate())
+	return {"r": rs, "t": td, "round": round, "pg": podium_given, "pt": podium_teams.duplicate(), "rh": refresh_holder}
+
+func _restore(S: Dictionary) -> void:
+	for i in riders.size():
+		var r: Dictionary = riders[i]
+		var d: Dictionary = S["r"][i]
+		for k in _SNAP_KEYS:
+			if d[k] == null:
+				r.erase(k)
+			else:
+				r[k] = d[k]
+		r["deck"] = d["deck"].duplicate()
+		r["recycled"] = d["recycled"].duplicate()
+		r["hand"] = d["hand"].duplicate()
+		r["played"] = d["played"].duplicate()
+	for i in teams.size():
+		teams[i]["deck"] = S["t"][i].duplicate()
+	round = S["round"]
+	podium_given = S["pg"]
+	podium_teams = S["pt"].duplicate()
+	refresh_holder = S["rh"]
+
+## Valore di un finale per la squadra: piazzamento del corridore migliore (vincere vale molto),
+## poi quello del compagno. Chi non è ancora arrivato è ordinato per posizione in pista.
+func _mc_value(team: Dictionary) -> float:
+	var order := riders.duplicate()
+	order.sort_custom(func(a, b):
+		if a["finished"] != b["finished"]:
+			return a["finished"]
+		if a["finished"]:
+			return a["fin_place"] < b["fin_place"]
+		return ahead(a, b))
+	var n := float(order.size())
+	var ranks: Array = []
+	for r in team["riders"]:
+		ranks.append(order.find(r))
+	ranks.sort()
+	var r0: int = ranks[0]
+	var r1: int = ranks[1]
+	var v: float = (n - r0) / n + 0.25 * (n - r1) / n
+	if r0 == 0:
+		v += 1.0
+	elif r0 == 1:
+		v += 0.35
+	return v
+
+## Un turno simulato: chi non ha ancora scelto pesca e sceglie con la CPU normale, poi movimento,
+## scia, arrivi, fatica.
+func _sim_turn() -> void:
+	for r in on_track():
+		if is_dummy(r) or int(r.get("ct", -1)) == round:
+			continue
+		draw_hand(r)
+		choose(r, ai_pick(r))
+	dummy_cards()
+	for r in movement_order():
+		move_rider(r)
+	slipstream()
+	check_refresh()
+	record_finishers()
+	add_time_tokens()
+	exhaustion()
+	remove_finished()
+	round += 1
+
+func _mc_pick(r: Dictionary) -> Dictionary:
+	var hand: Array = r["hand"]
+	if hand.size() <= 1:
+		return hand[0]
+	# carte uguali danno lo stesso risultato: se ne prova una per valore
+	var cands: Array = []
+	var seen := {}
+	for c in hand:
+		var key := "%d%s" % [c["v"], "x" if c["ex"] else ""]
+		if not seen.has(key):
+			seen[key] = true
+			cands.append(c)
+	if cands.size() == 1:
+		return cands[0]
+	var S := _snap()
+	var rng_state := rng.state
+	var base := rng.randi()
+	var team: Dictionary = r["team"]
+	var score: Array = []
+	score.resize(cands.size())
+	score.fill(0.0)
+	var done := 0
+	var alive: Array = range(cands.size())
+	var sq: Array = []
+	sq.resize(cands.size())
+	sq.fill(0.0)
+	var t0 := Time.get_ticks_msec()
+	_sim = true
+	var n_samples: int = int(team.get("samples", mc_samples))
+	var budget: int = int(team.get("budget", mc_max_ms))
+	for k in n_samples:
+		for ci in alive:
+			_restore(S)
+			rng.seed = base + k * 7919
+			# mondo plausibile: l'ordine dei mazzi è sconosciuto
+			for o in riders:
+				if not o["finished"]:
+					_shuffle(o["deck"])
+			for t in teams:
+				_shuffle(t["deck"])
+			var c: Dictionary = cands[ci]
+			r["hand"] = hand.duplicate()
+			choose(r, c)
+			var guard := 0
+			while guard < 40:
+				guard += 1
+				var ours_left := false
+				for o in team["riders"]:
+					if not o["finished"]:
+						ours_left = true
+				if not ours_left or all_finished():
+					break
+				_sim_turn()
+			var val := _mc_value(team)
+			score[ci] += val
+			sq[ci] += val * val
+		done += 1
+		# scarto delle carte nettamente peggiori (dopo almeno 4 finali)
+		if mc_prune and done >= 4 and alive.size() > 1:
+			var top := -1e9
+			for ci in alive:
+				top = maxf(top, score[ci] / done)
+			var keep: Array = []
+			for ci in alive:
+				var m: float = score[ci] / done
+				var var_: float = maxf(0.0, sq[ci] / done - m * m)
+				if m + 2.0 * sqrt(var_ / done) + 0.05 >= top:
+					keep.append(ci)
+			alive = keep
+			if alive.size() == 1:
+				break
+		if Time.get_ticks_msec() - t0 > budget and done >= 4:
+			break
+	_sim = false
+	_restore(S)
+	rng.state = rng_state
+	var best: int = alive[0]
+	for ci in alive:
+		if score[ci] > score[best]:
+			best = ci
+	return cands[best]
 
 func _ai_pick(r: Dictionary) -> Dictionary:
 	if r["team"].get("ai", "") == "base":
