@@ -17,7 +17,7 @@ var action: VBoxContainer
 var log_box: RichTextLabel
 var follow_btn: CheckButton
 var overlay: PanelContainer
-var cfg := {"n": 3, "kind": [0, 1, 1, 1, 1, 1], "mode": 0, "length": 1, "peloton": false, "seq": "", "stage": 0, "exh": 0, "free_start": true, "relief": 2, "tour": 0, "carry": true, "anim": 0, "breakaway": false, "rest": true, "gt": false, "meteo": false, "stype": 0}
+var cfg := {"n": 3, "kind": [0, 1, 1, 1, 1, 1], "mode": 0, "length": 1, "peloton": false, "seq": "", "stage": 0, "exh": 0, "free_start": true, "relief": 2, "tour": 0, "carry": true, "anim": 0, "breakaway": false, "rest": true, "gt": false, "meteo": false, "stype": 0, "cpu": 1}
 var stages: Array = []
 var tour := {}
 var history: Array = []
@@ -31,7 +31,7 @@ var menu_dialog: ConfirmationDialog
 var race_id := 0      # cambia a ogni nuova corsa o ritorno al menu
 var preview_seq: Array = []
 
-const VERSION := "0.37 (8 ottobre)"
+const VERSION := "0.38 (8 ottobre)"
 const LENGTH_KEYS := ["breve", "media", "lunga", "tutte"]
 const LENGTH_NAMES := ["Breve", "Media", "Completa", "Tutte le tessere"]
 const RELIEF := [0.0, 0.06, 0.1, 0.15]
@@ -48,6 +48,9 @@ const TOURS := [
 	{"name": "Tre tappe casuali", "random": 3},
 	{"name": "Sei tappe casuali", "random": 6},
 ]
+const CPU_LEVEL_NAMES := ["Normale", "Difficile", "Esperto"]
+## Livello della CPU: [livello nel motore, finali simulati per carta, millisecondi massimi per decisione]
+const CPU_LEVELS := [[1, 0, 0], [2, 16, 700], [2, 32, 1500]]
 const ANIM_NAMES := ["Lenta", "Normale", "Veloce"]
 const ANIM_STEP := [0.4, 0.22, 0.12]     # secondi per casella
 const KIND_NAMES := ["Giocatore", "Computer", "Squadra Peloton", "Squadra Muscle"]
@@ -187,6 +190,9 @@ func _build_setup() -> void:
 	exh.tooltip_text = "Carte fatica in più per ogni squadra di giocatori: handicap, o 3 nel solitario."
 	v.add_child(_row("Fatica iniziale", exh))
 	v.add_child(_row("Schieramento", _seg(["A scelta", "Casuale"], 0 if cfg["free_start"] else 1, func(k): cfg["free_start"] = k == 0)))
+	var cpu_seg := _seg(CPU_LEVEL_NAMES, cfg["cpu"], func(k): cfg["cpu"] = k)
+	cpu_seg.tooltip_text = "Normale: la CPU valuta la carta sulla posizione di adesso. Difficile ed Esperto: per ogni carta immagina molti finali di corsa e sceglie quella che porta al piazzamento migliore (Esperto ne immagina di più e ci mette qualche istante in più)."
+	v.add_child(_row("Computer", cpu_seg))
 	var bw := _seg(["Nessuna", "Variante Breakaway"], 1 if cfg["breakaway"] else 0, func(k):
 		cfg["breakaway"] = k == 1
 		_refresh_preview())
@@ -732,6 +738,12 @@ func _begin_stage() -> void:
 		stype = _stage_type()
 	R = Rules.new()
 	R.setup(track, _kinds(), cfg["exh"] if tour.is_empty() or tour["idx"] == 0 else 0, not cfg["free_start"], carry)
+	var lv: Array = CPU_LEVELS[cfg["cpu"]]
+	for t in R.teams:
+		if t["kind"] == "cpu":
+			t["level"] = lv[0]
+			t["samples"] = lv[1]
+			t["budget"] = lv[2]
 	R.tt = stype if stype == "ttt" or stype == "itt" else ""
 	if R.tt == "":
 		R.place_tokens()
@@ -836,10 +848,23 @@ func _race_loop() -> void:
 		for t in R.teams:
 			if t["human"] and not R.active(t).is_empty():
 				humans += 1
-		for t in R.teams:
+		# il computer sceglie per primo: così non può mai conoscere le carte già scelte dai giocatori
+		var choosers: Array = R.teams.filter(func(t): return not t["human"]) + R.teams.filter(func(t): return t["human"])
+		var cpu_thinking := false
+		for t in choosers:
 			var act: Array = R.active(t)
 			if act.is_empty():
 				continue
+			if t["human"] and cpu_thinking:
+				cpu_thinking = false
+				_update_status()
+			if not t["human"] and t["kind"] == "cpu" and int(t.get("level", 1)) >= 2 and not cpu_thinking:
+				cpu_thinking = true
+				status_lbl.text = "Turno %d: il computer ci pensa…" % R.round
+				await get_tree().process_frame
+				await get_tree().process_frame
+				if my != race_id:
+					return
 			if t["human"]:
 				if humans > 1:
 					await _pass_device(t)
@@ -865,6 +890,8 @@ func _race_loop() -> void:
 				for r in act:
 					R.draw_hand(r)
 					R.choose(r, R.ai_pick(r))
+		if cpu_thinking:
+			_update_status()
 		R.dummy_cards()
 		_show_reveal()
 		await _wait(0.7)
