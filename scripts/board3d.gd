@@ -953,7 +953,168 @@ func show_weather(tiles: Array) -> void:
 		spr.rotation.y = -dir.angle()
 		add_child(spr)
 		_weather_nodes.append(spr)
+		# effetti sopra il rettilineo: assi locali X = senso di marcia, Z = di lato
+		var fx := Node3D.new()
+		fx.position = Vector3(mid.x, y, mid.y)
+		fx.rotation.y = -dir.angle()
+		add_child(fx)
+		_weather_nodes.append(fx)
+		_weather_fx(fx, wt["kind"], (b - a).length() * 0.5 + 0.5)
 
+## Effetti particellari del meteo (CPUParticles3D, compatibili anche con la versione web).
+## half: metà della lunghezza del rettilineo, in caselle.
+func _weather_fx(fx: Node3D, kind: String, half: float) -> void:
+	match kind:
+		"bagnato":
+			_clouds(fx, half)
+			var rain := _streaks(Color(0.75, 0.85, 1.0, 0.55), 0.012, 0.32, 260)
+			rain.position = Vector3(0, 1.85, 0)
+			rain.emission_box_extents = Vector3(half, 0.05, 0.9)
+			rain.direction = Vector3(0, -1, 0)
+			rain.spread = 4.0
+			rain.initial_velocity_min = 5.5
+			rain.initial_velocity_max = 7.0
+			rain.gravity = Vector3(0, -6, 0)
+			rain.lifetime = 0.34
+			fx.add_child(rain)
+			# schizzi sull'asfalto
+			var splash := _streaks(Color(0.85, 0.92, 1.0, 0.5), 0.02, 0.05, 90)
+			splash.position = Vector3(0, 0.03, 0)
+			splash.emission_box_extents = Vector3(half, 0.0, 0.8)
+			splash.direction = Vector3(0, 1, 0)
+			splash.spread = 60.0
+			splash.initial_velocity_min = 0.4
+			splash.initial_velocity_max = 0.9
+			splash.gravity = Vector3(0, -4, 0)
+			splash.lifetime = 0.25
+			fx.add_child(splash)
+			# velo d'acqua sulla strada
+			var wet := MeshInstance3D.new()
+			var pm := PlaneMesh.new()
+			pm.size = Vector2(half * 2.0, 1.7)
+			wet.mesh = pm
+			var wm := StandardMaterial3D.new()
+			wm.albedo_color = Color(0.35, 0.45, 0.6, 0.22)
+			wm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			wm.metallic = 0.3
+			wm.roughness = 0.15
+			wet.material_override = wm
+			wet.position.y = 0.012
+			fx.add_child(wet)
+		"favore", "contrario", "laterale":
+			var v := Vector3(1, 0, 0)
+			var box := Vector3(half, 0.25, 0.85)
+			var origin := Vector3(0, 0.35, 0)
+			if kind == "contrario":
+				v = Vector3(-1, 0, 0)
+			elif kind == "laterale":
+				# il vento arriva da sinistra e attraversa la strada
+				v = Vector3(0, 0, -1)
+				origin = Vector3(0, 0.35, 0.9)
+				box = Vector3(half, 0.25, 0.25)
+			var gust := _streaks(Color(1, 1, 1, 0.5), 0.01, 0.55, 70)
+			gust.position = origin
+			gust.emission_box_extents = box
+			gust.direction = v
+			gust.spread = 3.0
+			gust.initial_velocity_min = 3.5
+			gust.initial_velocity_max = 5.0
+			gust.gravity = Vector3.ZERO
+			gust.lifetime = 0.55 if kind == "laterale" else 0.9
+			fx.add_child(gust)
+			# foglie trascinate dal vento
+			var leaves := CPUParticles3D.new()
+			var lm := QuadMesh.new()
+			lm.size = Vector2(0.07, 0.045)
+			leaves.mesh = lm
+			var lmat := StandardMaterial3D.new()
+			lmat.albedo_color = Color(0.55, 0.62, 0.22)
+			lmat.vertex_color_use_as_albedo = true
+			lmat.cull_mode = BaseMaterial3D.CULL_DISABLED
+			lmat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			leaves.material_override = lmat
+			leaves.amount = 16
+			leaves.lifetime = 1.6
+			leaves.position = origin
+			leaves.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
+			leaves.emission_box_extents = box
+			leaves.direction = v + Vector3(0, 0.25, 0)
+			leaves.spread = 20.0
+			leaves.initial_velocity_min = 1.6
+			leaves.initial_velocity_max = 2.6
+			leaves.gravity = Vector3(0, -0.6, 0)
+			leaves.angular_velocity_min = -360.0
+			leaves.angular_velocity_max = 360.0
+			leaves.angle_min = 0.0
+			leaves.angle_max = 360.0
+			leaves.particle_flag_rotate_y = true
+			var lg := Gradient.new()
+			lg.set_color(0, Color(0.75, 0.6, 0.2))
+			lg.set_color(1, Color(0.45, 0.6, 0.2))
+			leaves.color_initial_ramp = lg
+			fx.add_child(leaves)
+
+## Particelle a bastoncino orientate lungo la velocità (pioggia, folate di vento), con dissolvenza.
+func _streaks(col: Color, radius: float, length: float, amount: int) -> CPUParticles3D:
+	var p := CPUParticles3D.new()
+	var cm := CylinderMesh.new()
+	cm.top_radius = radius
+	cm.bottom_radius = radius
+	cm.height = length
+	cm.radial_segments = 4
+	cm.rings = 1
+	p.mesh = cm
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.vertex_color_use_as_albedo = true
+	m.albedo_color = Color(1, 1, 1, 1)
+	p.material_override = m
+	p.amount = amount
+	p.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
+	p.particle_flag_align_y = true
+	var g := Gradient.new()
+	g.set_color(0, Color(col.r, col.g, col.b, 0.0))
+	g.add_point(0.2, col)
+	g.add_point(0.8, col)
+	g.set_color(g.get_point_count() - 1, Color(col.r, col.g, col.b, 0.0))
+	p.color_ramp = g
+	p.preprocess = 1.0
+	return p
+
+## Nuvole grigie sopra il rettilineo: sprite morbidi che si muovono piano.
+func _clouds(fx: Node3D, half: float) -> void:
+	var gt := GradientTexture2D.new()
+	gt.fill = GradientTexture2D.FILL_RADIAL
+	gt.fill_from = Vector2(0.5, 0.5)
+	gt.fill_to = Vector2(1.0, 0.5)
+	gt.width = 128
+	gt.height = 128
+	var g := Gradient.new()
+	g.set_color(0, Color(0.5, 0.53, 0.6, 0.75))
+	g.add_point(0.45, Color(0.58, 0.61, 0.68, 0.45))
+	g.set_color(g.get_point_count() - 1, Color(0.62, 0.66, 0.72, 0.0))
+	gt.gradient = g
+	var rnd := RandomNumberGenerator.new()
+	rnd.seed = 11
+	var n := int(half * 2.0) + 3
+	for i in n:
+		var c := Sprite3D.new()
+		c.texture = gt
+		c.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		c.transparent = true
+		c.shaded = false
+		c.no_depth_test = false
+		var sz := rnd.randf_range(0.9, 1.4)
+		c.pixel_size = sz / 128.0
+		c.modulate = Color(1, 1, 1, rnd.randf_range(0.75, 1.0)).darkened(rnd.randf_range(0.0, 0.25))
+		var x := lerpf(-half, half, (i + 0.5) / n) + rnd.randf_range(-0.3, 0.3)
+		c.position = Vector3(x, 2.0 + rnd.randf_range(-0.1, 0.15), rnd.randf_range(-0.4, 0.4))
+		fx.add_child(c)
+		var tw := c.create_tween().set_loops()
+		var dx := rnd.randf_range(0.15, 0.3)
+		tw.tween_property(c, "position:x", x + dx, rnd.randf_range(2.5, 4.0)).set_trans(Tween.TRANS_SINE)
+		tw.tween_property(c, "position:x", x - dx, rnd.randf_range(2.5, 4.0)).set_trans(Tween.TRANS_SINE)
 
 # ---------- tappa lunga: gettone del ristoro ----------
 
