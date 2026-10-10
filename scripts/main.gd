@@ -30,8 +30,16 @@ var anim_seg: HBoxContainer
 var menu_dialog: ConfirmationDialog
 var race_id := 0      # cambia a ogni nuova corsa o ritorno al menu
 var preview_seq: Array = []
+var net: Net
+## Partita online in corso: {role: "host"/"guest", code, seat, game, names}. Vuoto se si gioca in locale.
+var online := {}
+var online_lbl: Label
+var online_box: VBoxContainer
+var online_name: LineEdit
+var online_code: LineEdit
+var autoplay := false   # solo per le prove automatiche: le carte dei giocatori le sceglie il computer
 
-const VERSION := "0.39 (10 ottobre)"
+const VERSION := "0.40 (10 ottobre)"
 const LENGTH_KEYS := ["breve", "media", "lunga", "tutte"]
 const LENGTH_NAMES := ["Breve", "Media", "Completa", "Tutte le tessere"]
 const RELIEF := [0.0, 0.06, 0.1, 0.15]
@@ -147,6 +155,37 @@ func _build_setup() -> void:
 	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	v.add_theme_constant_override("separation", 9)
 	scroll.add_child(v)
+	# ----- partita online -----
+	v.add_child(_section("Partita"))
+	online_box = VBoxContainer.new()
+	online_box.add_theme_constant_override("separation", 6)
+	online_box.visible = false
+	v.add_child(_row("Dove", _seg(["Su questo dispositivo", "Online"], 0, func(k): online_box.visible = k == 1, 14)))
+	online_name = LineEdit.new()
+	online_name.placeholder_text = "il tuo nome"
+	online_name.max_length = 20
+	online_box.add_child(_row("Il tuo nome", online_name))
+	var orow := HBoxContainer.new()
+	orow.add_theme_constant_override("separation", 6)
+	var create := Button.new()
+	create.text = "Crea una stanza"
+	create.pressed.connect(_online_create)
+	orow.add_child(create)
+	online_code = LineEdit.new()
+	online_code.placeholder_text = "codice"
+	online_code.max_length = 4
+	online_code.custom_minimum_size.x = 90
+	online_code.text_changed.connect(func(t): online_code.text = t.to_upper(); online_code.caret_column = t.length())
+	orow.add_child(online_code)
+	var join := Button.new()
+	join.text = "Entra"
+	join.pressed.connect(_online_join)
+	orow.add_child(join)
+	online_box.add_child(orow)
+	online_lbl = _label("Chi crea la stanza sceglie squadre e percorso qui sotto: le squadre impostate su Giocatore diventano i posti per gli amici, che entrano con il codice. Online la corsa è singola (niente tour né fuga) e lo schieramento è casuale.", 13, Color(1, 1, 1, 0.7))
+	online_box.add_child(online_lbl)
+	v.add_child(online_box)
+	v.add_child(HSeparator.new())
 	# ----- squadre -----
 	v.add_child(_section("Squadre"))
 	var teams_box := VBoxContainer.new()
@@ -311,9 +350,207 @@ func _build_setup() -> void:
 	start.add_theme_stylebox_override("normal", st_on)
 	var st_h := _style(Color("#DD4450"), 8)
 	start.add_theme_stylebox_override("hover", st_h)
-	start.pressed.connect(_start_race)
+	start.pressed.connect(func():
+		if online.get("role", "") == "host":
+			_online_start()
+		elif online.get("role", "") == "guest":
+			_msg("Sei ospite: la corsa la avvia chi ha creato la stanza.")
+		else:
+			_start_race())
 	v.add_child(start)
 	v.add_child(_plain("Versione " + VERSION, 12, Color(1, 1, 1, 0.4)))
+
+# ---------- gioco online ----------
+
+func _net() -> Net:
+	if net == null:
+		net = Net.new()
+		add_child(net)
+	return net
+
+func _player_name() -> String:
+	var n := online_name.text.strip_edges()
+	return n if n != "" else "Giocatore"
+
+func _seat_names(room: Dictionary) -> Dictionary:
+	var out := {}
+	var seats := Net._as_dict(room.get("seats", {}))
+	for k in seats:
+		out[int(k)] = str(seats[k].get("name", "?"))
+	return out
+
+func _online_seats_text(room: Dictionary) -> String:
+	var names := _seat_names(room)
+	var parts: Array = []
+	for idx in room.get("open", []):
+		var i := int(idx)
+		parts.append("%s: %s" % [Rules.TEAM_NAMES[i], names.get(i, "posto libero")])
+	return ", ".join(parts)
+
+func _online_create() -> void:
+	if cfg["mode"] == 3:
+		_msg("Il tour online non è ancora disponibile: scegli una corsa singola.")
+		return
+	var seats: Array = []
+	for i in cfg["n"]:
+		if cfg["kind"][i] == 0:
+			seats.append(i)
+	if seats.size() < 2:
+		_msg("Per giocare online servono almeno due squadre impostate su Giocatore: una è la tua, le altre sono i posti per gli amici.")
+		return
+	online_lbl.text = "Creo la stanza…"
+	var code := await _net().create_room(_player_name(), seats)
+	if code == "":
+		online_lbl.text = "Non riesco a creare la stanza (%s). Controlla la connessione." % net.last_error
+		return
+	online = {"role": "host", "code": code, "seat": seats[0], "open": seats}
+	_online_lobby_poll(code)
+
+## Lista dei posti aggiornata finché si è nella stanza d'attesa.
+func _online_lobby_poll(code: String) -> void:
+	while online.get("code", "") == code and setup_box.visible:
+		var room := await net.room(code)
+		if online.get("code", "") != code:
+			return
+		if room.is_empty():
+			online_lbl.text = "La stanza %s non esiste più." % code
+			online = {}
+			return
+		if online["role"] == "host":
+			online_lbl.text = "Stanza [ %s ]: dai il codice ai tuoi amici.\nPosti: %s.\nQuando ci siete tutti premi «Inizia la corsa» (i posti liberi li gioca il computer)." % [code, _online_seats_text(room)]
+		else:
+			if room.get("status", "") == "playing" and room.has("game"):
+				_online_begin(room["game"], _seat_names(room))
+				return
+			online_lbl.text = "Sei nella stanza [ %s ] con la squadra %s.\nPosti: %s.\nAspetta che chi l'ha creata avvii la corsa." % [code, Rules.TEAM_NAMES[online["seat"]], _online_seats_text(room)]
+		await get_tree().create_timer(1.5).timeout
+
+func _online_join() -> void:
+	var code := online_code.text.strip_edges().to_upper()
+	if code.length() != 4:
+		_msg("Il codice della stanza ha 4 lettere.")
+		return
+	online_lbl.text = "Entro nella stanza %s…" % code
+	var seat := await _net().join_room(code, _player_name())
+	if seat == -2:
+		online_lbl.text = "Stanza %s non trovata, oppure la corsa è già partita. %s" % [code, net.last_error]
+		return
+	if seat == -1:
+		online_lbl.text = "Nella stanza %s non ci sono posti liberi." % code
+		return
+	online = {"role": "guest", "code": code, "seat": seat}
+	_online_lobby_poll(code)
+
+## L'host avvia: prepara la corsa (percorso esatto, seme, squadre) e la pubblica nella stanza.
+func _online_start() -> void:
+	var code: String = online["code"]
+	if track == null or not track.ok():
+		_msg("Serve un percorso valido prima di iniziare.")
+		return
+	if cfg["mode"] == 3:
+		_msg("Il tour online non è ancora disponibile: scegli una corsa singola.")
+		return
+	var room := await net.room(code)
+	var names := _seat_names(room)
+	var kinds: Array = []
+	for i in cfg["n"]:
+		var k: String = Rules.KINDS[cfg["kind"][i]]
+		if k == "human" and not names.has(i):
+			k = "cpu"       # posto rimasto libero: lo gioca il computer
+		kinds.append(k)
+	if kinds.count("human") < 2:
+		_msg("Non è ancora entrato nessuno: aspetta gli amici, oppure gioca su questo dispositivo.")
+		return
+	var stype := _stage_type(stages[cfg["stage"]]) if cfg["mode"] == 1 else _stage_type()
+	var seq: Array = preview_seq.duplicate()
+	if stype == "ext":
+		seq = TrackGenerator.extend(seq)
+	var g := RandomNumberGenerator.new()
+	g.randomize()
+	var game := {"seed": g.randi() % 2000000000 + 1, "seq": seq, "kinds": kinds, "stype": stype,
+		"meteo": cfg["meteo"], "exh": cfg["exh"], "cpu": cfg["cpu"],
+		"title": stages[cfg["stage"]]["name"] if cfg["mode"] == 1 else "Tappa", "version": VERSION}
+	if not await net.start_room(code, game):
+		_msg("Non riesco ad avviare la stanza (%s)." % net.last_error)
+		return
+	_online_begin(game, names)
+
+## Avvio della corsa online (host e ospiti): tutti con la stessa corsa e lo stesso seme.
+func _online_begin(game: Dictionary, names: Dictionary) -> void:
+	online["game"] = game
+	online["names"] = names
+	var kinds: Array = game["kinds"]
+	cfg["n"] = kinds.size()
+	cfg["meteo"] = bool(game["meteo"])
+	cfg["exh"] = int(game["exh"])
+	cfg["cpu"] = int(game["cpu"])
+	cfg["free_start"] = false
+	cfg["breakaway"] = false
+	var seq: Array = []
+	for f in game["seq"]:
+		seq.append(str(f))
+	track = Track.build(seq, false)
+	track.compute_heights(RELIEF[cfg["relief"]])
+	preview_seq = seq
+	tour = {}
+	race_id += 1
+	setup_box.visible = false
+	panel.visible = true
+	for i in anim_seg.get_child_count():
+		(anim_seg.get_child(i) as Button).set_pressed_no_signal(i == cfg["anim"])
+	_set_anim(cfg["anim"])
+	_layout()
+	_begin_stage()
+
+func _online_team_label(t: Dictionary) -> String:
+	var names: Dictionary = online.get("names", {})
+	return "%s (%s)" % [t["name"], names[t["idx"]]] if names.has(t["idx"]) else t["name"]
+
+## Pubblica le scelte del turno di questo dispositivo, poi aspetta quelle degli altri e le applica.
+func _online_sync_turn(my: int) -> bool:
+	var code: String = online["code"]
+	var h0: int = online.get("turn_hash", 0)
+	var mine: Array = []
+	for t in R.teams:
+		if R.active(t).is_empty() or R.is_dummy(t["riders"][0]):
+			continue
+		if t["idx"] == online["seat"] or (online["role"] == "host" and t["kind"] == "cpu"):
+			mine.append(t)
+	for t in mine:
+		var choice := R.team_choice(t)
+		choice["h"] = h0
+		while not await net.post_choice(code, R.round, t["idx"], choice):
+			if my != race_id:
+				return false
+			# già scritta (ripresa dopo un errore di rete) oppure rete assente: si controlla e si riprova
+			var got := await net.choices(code, R.round)
+			if got.has(str(t["idx"])):
+				break
+			status_lbl.text = "Turno %d: connessione persa, riprovo…" % R.round
+			await get_tree().create_timer(2.0).timeout
+	var needed: Array = []
+	for t in R.teams:
+		if not R.active(t).is_empty() and not R.is_dummy(t["riders"][0]):
+			needed.append(t)
+	while true:
+		if my != race_id:
+			return false
+		var got := await net.choices(code, R.round)
+		if my != race_id:
+			return false
+		var missing: Array = needed.filter(func(t): return not got.has(str(t["idx"])))
+		if missing.is_empty():
+			for t in needed:
+				var ch: Dictionary = got[str(t["idx"])]
+				if int(ch.get("h", h0)) != h0:
+					log_line("[color=#FF9F40]Attenzione: la corsa di %s non coincide più con la tua (versioni diverse del gioco?).[/color]" % _online_team_label(t))
+				if not R.apply_choice(t, ch):
+					log_line("[color=#FF9F40]Attenzione: carta di %s non trovata nella mano: le corse non sono più allineate.[/color]" % _online_team_label(t))
+			_update_status()
+			return true
+		status_lbl.text = "Turno %d: aspetto %s" % [R.round, ", ".join(missing.map(func(t): return _online_team_label(t)))]
+		await get_tree().create_timer(1.0).timeout
+	return false
 
 ## Controlla che immagini e dati delle tessere siano della stessa versione.
 func _check_assets() -> void:
@@ -714,7 +951,10 @@ func _begin_stage() -> void:
 	var carry: Array = []
 	var order: Array = []
 	var stype := ""
-	if not tour.is_empty():
+	if not online.is_empty():
+		stype = str(online["game"]["stype"])
+		stage_title = str(online["game"]["title"])
+	elif not tour.is_empty():
 		var st: Dictionary = tour["stages"][tour["idx"]]
 		stype = _stage_type(st)
 		var sq: Array = st["seq"]
@@ -737,7 +977,14 @@ func _begin_stage() -> void:
 	else:
 		stype = _stage_type()
 	R = Rules.new()
-	R.setup(track, _kinds(), cfg["exh"] if tour.is_empty() or tour["idx"] == 0 else 0, not cfg["free_start"], carry)
+	if not online.is_empty():
+		R.setup(track, online["game"]["kinds"], cfg["exh"], true, [], int(online["game"]["seed"]))
+		for t in R.teams:
+			if t["kind"] == "human" and t["idx"] != online["seat"]:
+				t["human"] = false
+				t["remote"] = true
+	else:
+		R.setup(track, _kinds(), cfg["exh"] if tour.is_empty() or tour["idx"] == 0 else 0, not cfg["free_start"], carry)
 	var lv: Array = CPU_LEVELS[cfg["cpu"]]
 	for t in R.teams:
 		if t["kind"] == "cpu":
@@ -770,6 +1017,11 @@ func _begin_stage() -> void:
 	board.focus(board.pack_center(placed) if not placed.is_empty() else _start_center(), 10.0)
 	log_box.clear()
 	log_line("[b]%s[/b]: %d caselle all'arrivo." % [stage_title, track.finish + 1 - track.start_count])
+	if not online.is_empty():
+		var who: Array = []
+		for t in R.teams:
+			who.append(_online_team_label(t) + (" — tu" if t["idx"] == online["seat"] else ""))
+		log_line("[b]Corsa online[/b] (stanza %s): %s." % [online["code"], ", ".join(who)])
 	log_line("[color=#9AA4AE]Versione %s. Percorso: %s. Rilievo: %s.[/color]" % [VERSION, " ".join(preview_seq), RELIEF_NAMES[cfg["relief"]]])
 	match stype:
 		"ttt":
@@ -844,6 +1096,8 @@ func _race_loop() -> void:
 		R.round += 1
 		_update_status()
 		log_line("[b]Turno %d[/b]" % R.round)
+		if not online.is_empty():
+			online["turn_hash"] = R.state_hash()
 		var humans := 0
 		for t in R.teams:
 			if t["human"] and not R.active(t).is_empty():
@@ -865,7 +1119,11 @@ func _race_loop() -> void:
 				await get_tree().process_frame
 				if my != race_id:
 					return
-			if t["human"]:
+			if t["human"] and autoplay:
+				for r in act:
+					R.draw_hand(r)
+					R.choose(r, R.ai_pick(r))
+			elif t["human"]:
 				if humans > 1:
 					await _pass_device(t)
 					if my != race_id:
@@ -886,12 +1144,15 @@ func _race_loop() -> void:
 					R.choose(r, c)
 					prev = r
 				board.highlight(null)
-			elif t["kind"] == "cpu":
+			elif t["kind"] == "cpu" and (online.is_empty() or online["role"] == "host"):
 				for r in act:
 					R.draw_hand(r)
 					R.choose(r, R.ai_pick(r))
 		if cpu_thinking:
 			_update_status()
+		if not online.is_empty():
+			if not await _online_sync_turn(my):
+				return
 		R.dummy_cards()
 		_show_reveal()
 		await _wait(0.7)
@@ -958,7 +1219,7 @@ func _race_loop() -> void:
 				return
 			_show_report()
 			return
-		if humans > 0:
+		if humans > 0 and not autoplay:
 			await _ask_next()
 			if my != race_id:
 				return
@@ -1206,7 +1467,7 @@ func _breakaway() -> void:
 				board.highlight(null)
 			else:
 				if k == 0:
-					who[t["idx"]] = t["riders"][0] if R.rng.randf() < 0.7 else t["riders"][1]
+					who[t["idx"]] = t["riders"][0] if R.ai_rng.randf() < 0.7 else t["riders"][1]
 				r = who[t["idx"]]
 				R.draw_hand(r)
 				var so_far: int = bids[r["id"]][0]["v"] if bids.has(r["id"]) else 0
@@ -1499,6 +1760,9 @@ func _rider_cell_j(r: Dictionary) -> Control:
 	return h
 
 func _show_report() -> void:
+	if online.get("role", "") == "host":
+		var code: String = online["code"]
+		get_tree().create_timer(20.0).timeout.connect(func(): net.close_room(code))
 	_clear_action()
 	board.follow = false
 	var rank := R.ranking()
@@ -1706,6 +1970,9 @@ func _ask_menu() -> void:
 
 ## Torna alla scelta della corsa (non alla copertina), con le impostazioni e il percorso di prima.
 func _back_to_menu() -> void:
+	online = {}
+	if online_lbl:
+		online_lbl.text = "Sei uscito dalla stanza. Puoi crearne un'altra o entrare con un codice."
 	if is_instance_valid(menu_dialog):
 		menu_dialog.queue_free()
 	race_id += 1
