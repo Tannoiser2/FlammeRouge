@@ -37,9 +37,47 @@ func _init() -> void:
 		while not FileAccess.file_exists(code_file) and Time.get_ticks_msec() - t0 < 30000:
 			await create_timer(0.3).timeout
 		await create_timer(0.5).timeout
-		main.online_code.text = FileAccess.get_file_as_string(code_file).strip_edges()
+		var phase := OS.get_environment("FR_PHASE")
+		if phase != "back" or main.online_code.text == "":
+			main.online_code.text = FileAccess.get_file_as_string(code_file).strip_edges()
 		await main._online_join()
-		print("ospite: posto ", main.online.get("seat"))
+		print("ospite: posto ", main.online.get("seat"), " ", main.online_lbl.text.replace("\n", " "))
+		if phase == "drop":
+			# cade la linea a metà corsa: il gioco si chiude di colpo
+			Engine.time_scale = 10.0
+			while main.R == null or main.R.round < 4:
+				await process_frame
+			print("ospite: esco al turno ", main.R.round)
+			quit()
+			return
+	if OS.get_environment("FR_PHASE") == "slow":
+		# l'ospite ci pensa 40 secondi al primo turno: non deve essere sostituito dal computer
+		main.autoplay = false
+		while main.R == null or main.R.round < 1:
+			await process_frame
+		await create_timer(40.0).timeout
+		var team: Dictionary = main.R.teams[main.online["seat"]]
+		main.autoplay = true
+		main.choice.emit(main.R.active(team)[0])
+		for k in 6:
+			await create_timer(0.3).timeout
+			for r in main.R.active(team):
+				if not r["hand"].is_empty() and int(r.get("ct", -1)) != main.R.round:
+					main.choice.emit(r["hand"][0])
+		var got: Dictionary = await main.net.choices(main.online["code"], 1)
+		print("ospite lento: scelta del turno 1 = ", got.get(str(main.online["seat"])))
+	var shot := OS.get_environment("FR_SHOT")
+	if shot != "":
+		# foto dello schermo mentre si sceglie: chi ha già scelto e chi si aspetta
+		main.autoplay = false
+		var t2 := Time.get_ticks_msec()
+		while (main.R == null or main.R.round < 1) and Time.get_ticks_msec() - t2 < 30000:
+			await process_frame
+		await create_timer(7.0).timeout
+		root.get_viewport().get_texture().get_image().save_png(shot)
+		print(role, ": foto salvata")
+		quit()
+		return
 	Engine.time_scale = 10.0
 	var t1 := Time.get_ticks_msec()
 	while (main.R == null or not main.report.visible) and Time.get_ticks_msec() - t1 < 240000:
