@@ -169,7 +169,9 @@ Tour 2018 erano a cronometro lo restano: Cholet (a squadre) ed Espelette (indivi
 Si attiva nel menu ("Meteo"). A ogni tappa il gioco distribuisce a caso 13 gettoni (4
 condizioni e 9 di bel tempo), uno per ogni rettilineo esclusi partenza e arrivo. Accanto al
 rettilineo compare la sagoma corrispondente (`assets/meteo/`), e la cronaca annuncia il meteo
-della tappa. Gli effetti valgono per tutte e sei le caselle del rettilineo:
+della tappa. Sopra il rettilineo ci sono effetti animati: nuvole e pioggia con schizzi e asfalto
+lucido per il bagnato; folate di vento e foglie che corrono nel senso di marcia (a favore),
+contro (contrario) o di traverso (laterale). Gli effetti valgono per tutte e sei le caselle del rettilineo:
 - **Vento laterale**: niente scia, né data né ricevuta.
 - **Vento a favore**: chi inizia il turno lì pesca 5 carte.
 - **Vento contrario**: chi inizia il turno lì pesca 3 carte.

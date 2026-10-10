@@ -31,7 +31,7 @@ var menu_dialog: ConfirmationDialog
 var race_id := 0      # cambia a ogni nuova corsa o ritorno al menu
 var preview_seq: Array = []
 
-const VERSION := "0.38 (8 ottobre)"
+const VERSION := "0.39 (10 ottobre)"
 const LENGTH_KEYS := ["breve", "media", "lunga", "tutte"]
 const LENGTH_NAMES := ["Breve", "Media", "Completa", "Tutte le tessere"]
 const RELIEF := [0.0, 0.06, 0.1, 0.15]
