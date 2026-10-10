@@ -39,7 +39,7 @@ var online_name: LineEdit
 var online_code: LineEdit
 var autoplay := false   # solo per le prove automatiche: le carte dei giocatori le sceglie il computer
 
-const VERSION := "0.40 (10 ottobre)"
+const VERSION := "0.41 (10 ottobre)"
 const LENGTH_KEYS := ["breve", "media", "lunga", "tutte"]
 const LENGTH_NAMES := ["Breve", "Media", "Completa", "Tutte le tessere"]
 const RELIEF := [0.0, 0.06, 0.1, 0.15]
@@ -86,6 +86,7 @@ func _ready() -> void:
 	_preview()
 	_layout()
 	_show_splash()
+	_web_selftest()
 
 # ---------- interfaccia ----------
 
@@ -387,6 +388,22 @@ func _online_seats_text(room: Dictionary) -> String:
 		parts.append("%s: %s" % [Rules.TEAM_NAMES[i], names.get(i, "posto libero")])
 	return ", ".join(parts)
 
+## Prova automatica nel browser: con ?frtest=1 nell'indirizzo si crea subito una stanza.
+func _web_selftest() -> void:
+	if not OS.has_feature("web"):
+		return
+	var q = JavaScriptBridge.eval("new URLSearchParams(location.search).get('frtest') || ''")
+	if str(q) != "1":
+		return
+	await get_tree().create_timer(1.0).timeout
+	if splash_close.is_valid():
+		splash_close.call()
+	cfg["n"] = 2
+	cfg["kind"] = [0, 0, 1, 1, 1, 1]
+	online_name.text = "Prova"
+	await _online_create()
+	print("FRTEST esito: ", online.get("code", ""), " | ", online_lbl.text.replace("\n", " "))
+
 func _online_create() -> void:
 	if cfg["mode"] == 3:
 		_msg("Il tour online non è ancora disponibile: scegli una corsa singola.")
@@ -401,10 +418,30 @@ func _online_create() -> void:
 	online_lbl.text = "Creo la stanza…"
 	var code := await _net().create_room(_player_name(), seats)
 	if code == "":
-		online_lbl.text = "Non riesco a creare la stanza (%s). Controlla la connessione." % net.last_error
+		online_lbl.text = "Non riesco a creare la stanza.\n%s" % _net_hint()
 		return
 	online = {"role": "host", "code": code, "seat": seats[0], "open": seats}
 	_online_lobby_poll(code)
+
+## Errore di rete spiegato, con il rimedio quando è noto.
+func _net_hint() -> String:
+	var e := net.last_error
+	if e == "":
+		return "Motivo sconosciuto."
+	var tip := ""
+	if "ADMIN_ONLY_OPERATION" in e or "OPERATION_NOT_ALLOWED" in e:
+		tip = "In Firebase: Authentication > Metodo di accesso > attiva «Anonimo»."
+	elif "CONFIGURATION_NOT_FOUND" in e:
+		tip = "In Firebase: apri Authentication e premi «Inizia», poi attiva l'accesso «Anonimo»."
+	elif "API key" in e or "API_KEY" in e or "referer" in e.to_lower():
+		tip = "La chiave del progetto Firebase rifiuta questa pagina: controlla le restrizioni della chiave API."
+	elif "Permission denied" in e:
+		tip = "In Firebase: Realtime Database > Regole, incolla firebase/database.rules.json e pubblica."
+	elif "database" in e and ("non trovato" in e or "404" in e):
+		tip = "Il Realtime Database non risponde: controlla che sia stato creato (regione Europa)."
+	else:
+		tip = "Controlla la connessione."
+	return "Dettaglio: %s\n%s" % [e, tip]
 
 ## Lista dei posti aggiornata finché si è nella stanza d'attesa.
 func _online_lobby_poll(code: String) -> void:
@@ -433,7 +470,7 @@ func _online_join() -> void:
 	online_lbl.text = "Entro nella stanza %s…" % code
 	var seat := await _net().join_room(code, _player_name())
 	if seat == -2:
-		online_lbl.text = "Stanza %s non trovata, oppure la corsa è già partita. %s" % [code, net.last_error]
+		online_lbl.text = "Stanza %s non trovata, oppure la corsa è già partita.\n%s" % [code, _net_hint() if net.last_error != "" else ""]
 		return
 	if seat == -1:
 		online_lbl.text = "Nella stanza %s non ci sono posti liberi." % code

@@ -24,24 +24,54 @@ var last_error := ""
 func _init() -> void:
 	# per le prove automatiche si può puntare a un finto Firebase locale
 	var test_db := OS.get_environment("FR_DB_URL")
+	if OS.has_feature("web"):
+		# nella versione web: ?frdb=<indirizzo> nella pagina
+		var q = JavaScriptBridge.eval("new URLSearchParams(location.search).get('frdb') || ''")
+		test_db = str(q) if q != null else ""
+		if test_db != "":
+			var base := test_db.get_base_dir()
+			OS.set_environment("FR_AUTH_URL", base + "/signup")
+			OS.set_environment("FR_REFRESH_URL", base + "/refresh")
 	if test_db != "":
 		db_url = test_db
 		auth_url = OS.get_environment("FR_AUTH_URL")
 		refresh_url = OS.get_environment("FR_REFRESH_URL")
 
+const RESULT_NAMES := {
+	HTTPRequest.RESULT_CHUNKED_BODY_SIZE_MISMATCH: "risposta incompleta",
+	HTTPRequest.RESULT_CANT_CONNECT: "connessione rifiutata",
+	HTTPRequest.RESULT_CANT_RESOLVE: "indirizzo del server non trovato",
+	HTTPRequest.RESULT_CONNECTION_ERROR: "connessione interrotta o bloccata",
+	HTTPRequest.RESULT_TLS_HANDSHAKE_ERROR: "errore di sicurezza TLS",
+	HTTPRequest.RESULT_NO_RESPONSE: "nessuna risposta",
+	HTTPRequest.RESULT_BODY_SIZE_LIMIT_EXCEEDED: "risposta troppo grande",
+	HTTPRequest.RESULT_REQUEST_FAILED: "richiesta bloccata (CORS o rete)",
+	HTTPRequest.RESULT_TIMEOUT: "tempo scaduto",
+}
+
 ## Una richiesta HTTP: restituisce {code, data}. code 0 = rete non raggiungibile.
+## Se la rete fa le bizze riprova una volta; last_error dice quale passo è fallito e perché.
 func _request(method: int, url: String, body = null, form := false) -> Dictionary:
+	var r := await _request_once(method, url, body, form)
+	if r["code"] == 0:
+		await get_tree().create_timer(1.0).timeout
+		r = await _request_once(method, url, body, form)
+	return r
+
+func _request_once(method: int, url: String, body = null, form := false) -> Dictionary:
 	var http := HTTPRequest.new()
-	http.timeout = 15.0
+	http.timeout = 20.0
 	add_child(http)
 	var headers := PackedStringArray(["Content-Type: application/x-www-form-urlencoded" if form else "Content-Type: application/json"])
 	var payload := ""
 	if body != null:
 		payload = body if form else JSON.stringify(body)
+	var where := _where(url)
 	var err := http.request(url, headers, method, payload)
 	if err != OK:
 		http.queue_free()
-		last_error = "richiesta non partita (%d)" % err
+		last_error = "%s: richiesta non partita, errore %d" % [where, err]
+		push_warning("Net " + last_error)
 		return {"code": 0, "data": null}
 	var res: Array = await http.request_completed
 	http.queue_free()
@@ -49,11 +79,26 @@ func _request(method: int, url: String, body = null, form := false) -> Dictionar
 	var text: String = (res[3] as PackedByteArray).get_string_from_utf8()
 	var data = JSON.parse_string(text) if text != "" else null
 	if res[0] != HTTPRequest.RESULT_SUCCESS:
-		last_error = "rete non raggiungibile"
+		last_error = "%s: %s [%d]" % [where, RESULT_NAMES.get(res[0], "rete non raggiungibile"), res[0]]
+		push_warning("Net " + last_error)
 		return {"code": 0, "data": null}
 	if code >= 300:
-		last_error = "errore %d: %s" % [code, text.substr(0, 200)]
+		var msg := text.substr(0, 160)
+		if data is Dictionary and data.get("error") is Dictionary:
+			msg = str(data["error"].get("message", msg))
+		elif data is Dictionary and data.has("error"):
+			msg = str(data["error"])
+		last_error = "%s: errore %d, %s" % [where, code, msg]
+		push_warning("Net " + last_error)
 	return {"code": code, "data": data}
+
+## Nome breve del passo, per i messaggi d'errore.
+func _where(url: String) -> String:
+	if url.begins_with(auth_url.get_slice("?", 0)):
+		return "accesso anonimo"
+	if url.begins_with(refresh_url.get_slice("?", 0)):
+		return "rinnovo accesso"
+	return "database"
 
 ## Accesso anonimo (una volta per sessione).
 func sign_in() -> bool:
@@ -104,6 +149,7 @@ func db_delete(path: String) -> Dictionary:
 ## Crea una stanza con un codice di 4 lettere. seats: indici delle squadre dei giocatori;
 ## l'host occupa il primo. Restituisce il codice, oppure "" se non ci riesce.
 func create_room(player: String, seats: Array) -> String:
+	last_error = ""
 	if not await sign_in():
 		return ""
 	var g := RandomNumberGenerator.new()
@@ -125,6 +171,7 @@ func create_room(player: String, seats: Array) -> String:
 ## Entra in una stanza: occupa il primo posto libero. Restituisce l'indice della squadra, -1 se non c'è posto,
 ## -2 se la stanza non esiste o la corsa è già partita.
 func join_room(code: String, player: String) -> int:
+	last_error = ""
 	if not await sign_in():
 		return -2
 	var r := await db_get("rooms/" + code)
