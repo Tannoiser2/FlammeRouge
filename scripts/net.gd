@@ -45,6 +45,7 @@ const RESULT_NAMES := {
 	HTTPRequest.RESULT_TLS_HANDSHAKE_ERROR: "errore di sicurezza TLS",
 	HTTPRequest.RESULT_NO_RESPONSE: "nessuna risposta",
 	HTTPRequest.RESULT_BODY_SIZE_LIMIT_EXCEEDED: "risposta troppo grande",
+	HTTPRequest.RESULT_BODY_DECOMPRESS_FAILED: "risposta compressa illeggibile",
 	HTTPRequest.RESULT_REQUEST_FAILED: "richiesta bloccata (CORS o rete)",
 	HTTPRequest.RESULT_TIMEOUT: "tempo scaduto",
 }
@@ -61,6 +62,8 @@ func _request(method: int, url: String, body = null, form := false) -> Dictionar
 func _request_once(method: int, url: String, body = null, form := false) -> Dictionary:
 	var http := HTTPRequest.new()
 	http.timeout = 20.0
+	# nel browser la risposta arriva già decompressa: se Godot ci riprova fallisce (errore 8)
+	http.accept_gzip = not OS.has_feature("web")
 	add_child(http)
 	var headers := PackedStringArray(["Content-Type: application/x-www-form-urlencoded" if form else "Content-Type: application/json"])
 	var payload := ""

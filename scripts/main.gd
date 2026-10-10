@@ -39,7 +39,7 @@ var online_name: LineEdit
 var online_code: LineEdit
 var autoplay := false   # solo per le prove automatiche: le carte dei giocatori le sceglie il computer
 
-const VERSION := "0.41 (10 ottobre)"
+const VERSION := "0.42 (10 ottobre)"
 const LENGTH_KEYS := ["breve", "media", "lunga", "tutte"]
 const LENGTH_NAMES := ["Breve", "Media", "Completa", "Tutte le tessere"]
 const RELIEF := [0.0, 0.06, 0.1, 0.15]
