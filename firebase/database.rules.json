@@ -25,7 +25,7 @@
         },
         "seats": {
           "$i": {
-            ".write": "auth != null && ((!data.exists() && newData.child('uid').val() === auth.uid) || data.child('uid').val() === auth.uid || root.child('rooms/' + $code + '/host').val() === auth.uid || newData.parent().parent().child('host').val() === auth.uid)",
+            ".write": "auth != null && ((!data.exists() && newData.child('uid').val() === auth.uid) || data.child('uid').val() === auth.uid || data.child('away').val() === true || root.child('rooms/' + $code + '/host').val() === auth.uid || newData.parent().parent().child('host').val() === auth.uid)",
             ".validate": "newData.hasChildren(['uid', 'name']) && newData.child('name').isString() && newData.child('name').val().length <= 24"
           }
         },

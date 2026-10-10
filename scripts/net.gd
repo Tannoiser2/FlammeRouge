@@ -20,6 +20,7 @@ var id_token := ""
 var refresh_token := ""
 var token_at := 0.0
 var last_error := ""
+var last_room := {}
 
 func _init() -> void:
 	# per le prove automatiche si può puntare a un finto Firebase locale
@@ -103,10 +104,23 @@ func _where(url: String) -> String:
 		return "rinnovo accesso"
 	return "database"
 
-## Accesso anonimo (una volta per sessione).
+const SESSION_FILE := "user://online.cfg"
+
+## Accesso anonimo (una volta per sessione). L'identità si conserva sul dispositivo:
+## chi ricarica la pagina o riapre il gioco resta lo stesso giocatore e può rientrare nella sua stanza.
 func sign_in() -> bool:
 	if id_token != "":
 		return await _fresh()
+	var saved := load_session()
+	if saved.get("refresh", "") != "":
+		var rr := await _request(HTTPClient.METHOD_POST, refresh_url, "grant_type=refresh_token&refresh_token=" + str(saved["refresh"]).uri_encode(), true)
+		if rr["code"] == 200 and rr["data"] is Dictionary and rr["data"].get("id_token", "") != "":
+			id_token = rr["data"]["id_token"]
+			refresh_token = rr["data"].get("refresh_token", saved["refresh"])
+			uid = rr["data"].get("user_id", saved.get("uid", ""))
+			token_at = Time.get_unix_time_from_system()
+			_save({"refresh": refresh_token, "uid": uid})
+			return true
 	var r := await _request(HTTPClient.METHOD_POST, auth_url, {"returnSecureToken": true})
 	if r["code"] != 200 or not (r["data"] is Dictionary):
 		return false
@@ -114,7 +128,45 @@ func sign_in() -> bool:
 	refresh_token = r["data"].get("refreshToken", "")
 	uid = r["data"].get("localId", "")
 	token_at = Time.get_unix_time_from_system()
+	_save({"refresh": refresh_token, "uid": uid})
 	return id_token != ""
+
+## Dati salvati sul dispositivo: identità, ultima stanza (codice e posto), nome.
+## Nel browser identità e stanza stanno nella scheda (sessionStorage): sopravvivono al ricaricamento,
+## ma due schede aperte sono due giocatori diversi. Il nome resta per tutte.
+const TAB_KEYS := ["refresh", "uid", "room", "seat"]
+
+func _session_file() -> String:
+	var f := OS.get_environment("FR_SESSION")
+	return f if f != "" else SESSION_FILE
+
+func load_session() -> Dictionary:
+	var out := {}
+	var c := ConfigFile.new()
+	if c.load(_session_file()) == OK and c.has_section("s"):
+		for k in c.get_section_keys("s"):
+			out[k] = c.get_value("s", k)
+	if OS.has_feature("web"):
+		for k in TAB_KEYS:
+			out.erase(k)
+			var v = JavaScriptBridge.eval("sessionStorage.getItem('fr_%s') || ''" % k)
+			if v != null and str(v) != "":
+				out[k] = int(str(v)) if k == "seat" else str(v)
+	return out
+
+func _save(values: Dictionary) -> void:
+	var c := ConfigFile.new()
+	c.load(_session_file())
+	for k in values:
+		if OS.has_feature("web") and k in TAB_KEYS:
+			JavaScriptBridge.eval("sessionStorage.setItem('fr_%s', %s)" % [k, JSON.stringify(str(values[k]))])
+		else:
+			c.set_value("s", k, values[k])
+	c.save(_session_file())
+
+## Ricorda la stanza in cui si sta giocando (per rientrare), oppure la dimentica con code = "".
+func remember_room(code: String, seat := -1) -> void:
+	_save({"room": code, "seat": seat})
 
 ## Il gettone d'accesso dura un'ora: lo si rinnova dopo 50 minuti.
 func _fresh() -> bool:
@@ -126,6 +178,7 @@ func _fresh() -> bool:
 	id_token = r["data"].get("id_token", id_token)
 	refresh_token = r["data"].get("refresh_token", refresh_token)
 	token_at = Time.get_unix_time_from_system()
+	_save({"refresh": refresh_token})
 	return true
 
 func _url(path: String) -> String:
@@ -172,19 +225,30 @@ func create_room(player: String, seats: Array) -> String:
 	return ""
 
 ## Entra in una stanza: occupa il primo posto libero. Restituisce l'indice della squadra, -1 se non c'è posto,
-## -2 se la stanza non esiste o la corsa è già partita.
+## -2 se la stanza non esiste o la corsa è già partita (e non si aveva un posto).
+## Chi aveva già un posto lo ritrova, anche a corsa iniziata: last_room tiene la stanza letta.
 func join_room(code: String, player: String) -> int:
 	last_error = ""
 	if not await sign_in():
 		return -2
 	var r := await db_get("rooms/" + code)
-	if r["code"] != 200 or not (r["data"] is Dictionary) or r["data"].get("status", "") != "lobby":
+	if r["code"] != 200 or not (r["data"] is Dictionary):
 		return -2
 	var room: Dictionary = r["data"]
+	last_room = room
 	var seats: Dictionary = _as_dict(room.get("seats", {}))
 	for k in seats:
 		if seats[k] is Dictionary and seats[k].get("uid", "") == uid:
 			return int(k)
+	if room.get("status", "") != "lobby":
+		# corsa già partita: si può riprendere un posto lasciato (assente) con lo stesso nome
+		for k in seats:
+			var st = seats[k]
+			if st is Dictionary and st.get("away", false) and str(st.get("name", "")).strip_edges().to_lower() == player.strip_edges().to_lower():
+				var w := await db_put("rooms/%s/seats/%s" % [code, k], {"uid": uid, "name": st["name"], "away": false})
+				if w["code"] == 200:
+					return int(k)
+		return -2
 	for idx in room.get("open", []):
 		if not seats.has(str(int(idx))):
 			var w := await db_put("rooms/%s/seats/%d" % [code, int(idx)], {"uid": uid, "name": player})
@@ -209,6 +273,15 @@ func post_choice(code: String, round_n: int, team_idx: int, choice: Dictionary) 
 func choices(code: String, round_n: int) -> Dictionary:
 	var r := await db_get("rooms/%s/turns/%d" % [code, round_n])
 	return _as_dict(r["data"]) if r["code"] == 200 else {}
+
+## Segna un posto come assente (gioca il computer) o di nuovo presente.
+func set_away(code: String, seat: int, away: bool) -> bool:
+	var r := await db_patch("rooms/%s/seats/%d" % [code, seat], {"away": away})
+	return r["code"] == 200
+
+## Segnale di presenza mentre si scelgono le carte (l'host lo usa per capire chi è ancora collegato).
+func heartbeat(code: String, seat: int) -> void:
+	await db_patch("rooms/%s/seats/%d" % [code, seat], {"seen": {".sv": "timestamp"}, "away": false})
 
 func close_room(code: String) -> void:
 	await db_delete("rooms/" + code)

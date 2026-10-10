@@ -85,11 +85,14 @@ def allowed(uid, path, new, new_host=None):
         return key not in room
     if key in ("status", "open", "game"):
         return host == uid
+    if key == "seats" and len(path) == 5:
+        cur = get_node(path[:4]) or {}
+        return cur.get("uid") == uid or host == uid
     if key == "seats" and len(path) == 4:
         cur = get_node(path)
         if cur is None:
             return (isinstance(new, dict) and new.get("uid") == uid) or host == uid
-        return cur.get("uid") == uid or host == uid
+        return cur.get("uid") == uid or cur.get("away") is True or host == uid
     if key == "turns" and len(path) == 5:
         if get_node(path) is not None:
             return False
@@ -183,7 +186,7 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
-        self._body()
+        body = self._body()
         with LOCK:
             COUNT[0] += 1
             n = COUNT[0]
@@ -192,7 +195,14 @@ class H(BaseHTTPRequestHandler):
             TOKENS[tok] = "uid%d" % n
             return self._send(200, {"idToken": tok, "localId": "uid%d" % n, "refreshToken": "r" + tok, "expiresIn": "3600"})
         if u.path == "/refresh":
-            return self._send(200, {"id_token": "tok1", "refresh_token": "rtok1"})
+            # la stessa identità di prima, con un gettone nuovo
+            old = parse_qs(body).get("refresh_token", [""])[0]
+            uid = TOKENS.get(old[1:]) if old.startswith("r") else None
+            if uid is None:
+                return self._send(400, {"error": {"message": "INVALID_REFRESH_TOKEN"}})
+            tok = "tok%d" % n
+            TOKENS[tok] = uid
+            return self._send(200, {"id_token": tok, "refresh_token": "r" + tok, "user_id": uid})
         self._send(404, {"error": "not found"})
 
 

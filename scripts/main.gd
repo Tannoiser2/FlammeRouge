@@ -33,13 +33,17 @@ var preview_seq: Array = []
 var net: Net
 ## Partita online in corso: {role: "host"/"guest", code, seat, game, names}. Vuoto se si gioca in locale.
 var online := {}
+var presence_box: VBoxContainer
+var AWAY_MS := int(OS.get_environment("FR_AWAY_MS")) if OS.get_environment("FR_AWAY_MS") != "" else 45000  # senza segnali per 45 s gioca il computer
+const AWAY_GRACE_MS := 4000   # chi è già assente: si controlla solo se è rientrato
+const CATCHUP_SPEED := 40.0   # velocità del riepilogo quando si rientra in una corsa
 var online_lbl: Label
 var online_box: VBoxContainer
 var online_name: LineEdit
 var online_code: LineEdit
 var autoplay := false   # solo per le prove automatiche: le carte dei giocatori le sceglie il computer
 
-const VERSION := "0.42 (10 ottobre)"
+const VERSION := "0.43 (10 ottobre)"
 const LENGTH_KEYS := ["breve", "media", "lunga", "tutte"]
 const LENGTH_NAMES := ["Breve", "Media", "Completa", "Tutte le tessere"]
 const RELIEF := [0.0, 0.06, 0.1, 0.15]
@@ -186,6 +190,11 @@ func _build_setup() -> void:
 	online_lbl = _label("Chi crea la stanza sceglie squadre e percorso qui sotto: le squadre impostate su Giocatore diventano i posti per gli amici, che entrano con il codice. Online la corsa è singola (niente tour né fuga) e lo schieramento è casuale.", 13, Color(1, 1, 1, 0.7))
 	online_box.add_child(online_lbl)
 	v.add_child(online_box)
+	var ses := _net().load_session()
+	online_name.text = str(ses.get("name", ""))
+	if str(ses.get("room", "")) != "":
+		online_code.text = str(ses["room"])
+		online_lbl.text = "Eri nella stanza %s: scegli Online e premi «Entra» per rientrare." % ses["room"]
 	v.add_child(HSeparator.new())
 	# ----- squadre -----
 	v.add_child(_section("Squadre"))
@@ -421,6 +430,8 @@ func _online_create() -> void:
 		online_lbl.text = "Non riesco a creare la stanza.\n%s" % _net_hint()
 		return
 	online = {"role": "host", "code": code, "seat": seats[0], "open": seats}
+	net.remember_room(code, seats[0])
+	net._save({"name": _player_name()})
 	_online_lobby_poll(code)
 
 ## Errore di rete spiegato, con il rimedio quando è noto.
@@ -475,8 +486,27 @@ func _online_join() -> void:
 	if seat == -1:
 		online_lbl.text = "Nella stanza %s non ci sono posti liberi." % code
 		return
-	online = {"role": "guest", "code": code, "seat": seat}
+	var room: Dictionary = net.last_room
+	online = {"role": "host" if room.get("host", "") == net.uid else "guest", "code": code, "seat": seat}
+	net.remember_room(code, seat)
+	net._save({"name": _player_name()})
+	if room.get("status", "") == "playing" and room.has("game"):
+		_online_rejoin(room)
+		return
 	_online_lobby_poll(code)
+
+## Rientro in una corsa già partita: si rigioca velocemente da capo con le carte già scelte
+## (la corsa è identica per tutti), poi si continua normalmente dal turno in corso.
+func _online_rejoin(room: Dictionary) -> void:
+	var code: String = online["code"]
+	online["catchup"] = true
+	online_lbl.text = "Rientro nella corsa della stanza %s…" % code
+	net.set_away(code, online["seat"], false)
+	var game: Dictionary = room["game"]
+	if str(game.get("version", VERSION)) != VERSION:
+		_msg("Attenzione: la stanza è stata creata con la versione %s del gioco, tu hai la %s. Ricarica la pagina per allinearti." % [game.get("version", "?"), VERSION])
+	Engine.time_scale = CATCHUP_SPEED
+	_online_begin(game, _seat_names(room))
 
 ## L'host avvia: prepara la corsa (percorso esatto, seme, squadre) e la pubblica nella stanza.
 func _online_start() -> void:
@@ -543,10 +573,94 @@ func _online_team_label(t: Dictionary) -> String:
 	var names: Dictionary = online.get("names", {})
 	return "%s (%s)" % [t["name"], names[t["idx"]]] if names.has(t["idx"]) else t["name"]
 
+## Ci sono già le carte di tutte le squadre per questo turno? (si sta rigiocando un turno passato)
+func _online_all_posted(got: Dictionary) -> bool:
+	for t in R.teams:
+		if not R.active(t).is_empty() and not R.is_dummy(t["riders"][0]) and not got.has(str(t["idx"])):
+			return false
+	return true
+
+## Durante la scelta delle carte controlla ogni tanto chi ha già scelto (finché non si sincronizza il turno).
+func _online_presence(my: int, rnd: int) -> void:
+	await get_tree().create_timer(1.5).timeout
+	var beat := 0
+	while my == race_id and R.round == rnd and not online.is_empty() and int(online.get("posted", -1)) != rnd:
+		if beat % 5 == 0 and online["role"] != "host":
+			net.heartbeat(online["code"], online["seat"])
+		beat += 1
+		var got := await net.choices(online["code"], rnd)
+		if my != race_id or R.round != rnd or online.is_empty() or int(online.get("posted", -1)) == rnd:
+			return
+		_presence_show(got, false)
+		await get_tree().create_timer(2.0).timeout
+
+## Una riga per squadra: chi è, se ha già scelto o se lo stiamo aspettando.
+func _presence_show(got: Dictionary, local_done: bool) -> void:
+	for c in presence_box.get_children():
+		c.queue_free()
+	presence_box.visible = not online.is_empty()
+	if online.is_empty():
+		return
+	var names: Dictionary = online.get("names", {})
+	var secs := int((Time.get_ticks_msec() - int(online.get("wait_from", Time.get_ticks_msec()))) / 1000)
+	var late := " (da %d s)" % secs if secs >= 30 else ""
+	for t in R.teams:
+		if R.active(t).is_empty() or R.is_dummy(t["riders"][0]):
+			continue
+		var idx: int = t["idx"]
+		var who: String = "Tu" if idx == online["seat"] else (names[idx] if names.has(idx) else "Computer")
+		var state := ""
+		var ok := got.has(str(idx))
+		if online.get("away", {}).has(idx) and not ok:
+			state = "assente: gioca il computer"
+		elif ok:
+			state = "✓ ha scelto"
+		elif idx == online["seat"]:
+			state = "invio…" if local_done else "tocca a te: scegli le carte"
+		elif t.get("remote", false) and names.has(idx):
+			state = "sta scegliendo…" + late
+		elif online["role"] == "host":
+			state = "sceglie quando hai scelto tu"
+		else:
+			state = "aspetta chi ha creato la stanza" + late
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 6)
+		var chip := PanelContainer.new()
+		var sb := _style(t["color"], 4)
+		sb.set_content_margin_all(2)
+		chip.add_theme_stylebox_override("panel", sb)
+		chip.custom_minimum_size = Vector2(14, 14)
+		chip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(chip)
+		var l := Label.new()
+		l.text = "%s · %s" % [who, state]
+		l.add_theme_font_size_override("font_size", 16)
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		l.add_theme_color_override("font_color", Color(0.55, 0.9, 0.55) if ok else (Color(1, 0.82, 0.35) if idx == online["seat"] else Color(0.85, 0.85, 0.85)))
+		row.add_child(l)
+		presence_box.add_child(row)
+
+## Gioca col computer per una squadra assente e pubblica la scelta (solo l'host).
+## Lo stato locale si ripristina comunque prima di applicare le scelte del turno.
+func _online_substitute(t: Dictionary, h0: int) -> void:
+	for r in R.active(t):
+		if int(r.get("ct", -1)) != R.round:
+			R.draw_hand(r)
+			R.choose(r, R.ai_pick(r))
+	var choice := R.team_choice(t)
+	choice["h"] = h0
+	choice["cpu"] = true
+	await net.post_choice(online["code"], R.round, t["idx"], choice)
+
 ## Pubblica le scelte del turno di questo dispositivo, poi aspetta quelle degli altri e le applica.
 func _online_sync_turn(my: int) -> bool:
 	var code: String = online["code"]
 	var h0: int = online.get("turn_hash", 0)
+	var got := await net.choices(code, R.round)
+	if my != race_id:
+		return false
+	_presence_show(got, true)
 	var mine: Array = []
 	for t in R.teams:
 		if R.active(t).is_empty() or R.is_dummy(t["riders"][0]):
@@ -554,14 +668,18 @@ func _online_sync_turn(my: int) -> bool:
 		if t["idx"] == online["seat"] or (online["role"] == "host" and t["kind"] == "cpu"):
 			mine.append(t)
 	for t in mine:
+		if got.has(str(t["idx"])):
+			continue        # già pubblicata (rientro, o l'ha giocata il computer al nostro posto)
 		var choice := R.team_choice(t)
+		if choice.is_empty():
+			continue
 		choice["h"] = h0
 		while not await net.post_choice(code, R.round, t["idx"], choice):
 			if my != race_id:
 				return false
 			# già scritta (ripresa dopo un errore di rete) oppure rete assente: si controlla e si riprova
-			var got := await net.choices(code, R.round)
-			if got.has(str(t["idx"])):
+			var again := await net.choices(code, R.round)
+			if again.has(str(t["idx"])):
 				break
 			status_lbl.text = "Turno %d: connessione persa, riprovo…" % R.round
 			await get_tree().create_timer(2.0).timeout
@@ -569,22 +687,77 @@ func _online_sync_turn(my: int) -> bool:
 	for t in R.teams:
 		if not R.active(t).is_empty() and not R.is_dummy(t["riders"][0]):
 			needed.append(t)
+	var away: Dictionary = online.get("away", {})
+	online["away"] = away
+	var since := {}
 	while true:
 		if my != race_id:
 			return false
-		var got := await net.choices(code, R.round)
+		got = await net.choices(code, R.round)
 		if my != race_id:
 			return false
 		var missing: Array = needed.filter(func(t): return not got.has(str(t["idx"])))
+		online["posted"] = R.round
+		_presence_show(got, true)
 		if missing.is_empty():
+			online["synced"] = R.round
+			# tutti ripartono dallo stesso stato e applicano le stesse carte: niente differenze possibili
+			R._restore(online["snap"])
 			for t in needed:
 				var ch: Dictionary = got[str(t["idx"])]
 				if int(ch.get("h", h0)) != h0:
 					log_line("[color=#FF9F40]Attenzione: la corsa di %s non coincide più con la tua (versioni diverse del gioco?).[/color]" % _online_team_label(t))
+				if ch.get("cpu", false) and not online.get("catchup", false):
+					if t["idx"] == online["seat"]:
+						log_line("[color=#FF9F40]Eri assente: per questo turno ha giocato il computer.[/color]")
+						net.set_away(code, online["seat"], false)     # sono qui: dal prossimo turno gioco io
+					elif online["role"] != "host":
+						log_line("%s è assente: gioca il computer." % _online_team_label(t))
 				if not R.apply_choice(t, ch):
 					log_line("[color=#FF9F40]Attenzione: carta di %s non trovata nella mano: le corse non sono più allineate.[/color]" % _online_team_label(t))
 			_update_status()
 			return true
+		# l'host fa giocare il computer al posto di chi non risponde
+		if online["role"] == "host":
+			var now := Time.get_ticks_msec()
+			var t0: int = int(online.get("wait_from", now))
+			# chi sta solo pensando manda un segnale ogni 10 secondi: lo si controlla ogni tanto
+			if now - t0 > mini(15000, AWAY_MS / 3) and now - int(online.get("seen_read", 0)) > 5000 and missing.any(func(t): return t.get("remote", false) and not away.has(t["idx"])):
+				online["seen_read"] = now
+				var seats := Net._as_dict((await net.room(code)).get("seats", {}))
+				if my != race_id:
+					return false
+				var seen: Dictionary = online.get("seen", {})
+				online["seen"] = seen
+				for k in seats:
+					if seats[k] is Dictionary and seats[k].has("seen") and seen.get(int(k), [null])[0] != seats[k]["seen"]:
+						seen[int(k)] = [seats[k]["seen"], Time.get_ticks_msec()]
+			for t in missing:
+				var idx: int = t["idx"]
+				if not t.get("remote", false):
+					continue
+				var start: int = since.get(idx, t0)
+				if online.get("seen", {}).has(idx):
+					start = maxi(start, int(online["seen"][idx][1]))
+				var lim: int = AWAY_GRACE_MS if away.has(idx) else AWAY_MS
+				if now - start < lim:
+					continue
+				if away.has(idx):
+					# era già assente: è rientrato nel frattempo?
+					var room := await net.room(code)
+					var seat = Net._as_dict(room.get("seats", {})).get(str(idx))
+					if seat is Dictionary and not seat.get("away", false):
+						away.erase(idx)
+						since[idx] = Time.get_ticks_msec()
+						log_line("%s è rientrato." % _online_team_label(t))
+						continue
+				else:
+					away[idx] = true
+					net.set_away(code, idx, true)
+					log_line("[color=#FF9F40]%s non risponde: finché non rientra gioca il computer.[/color]" % _online_team_label(t))
+				await _online_substitute(t, h0)
+				if my != race_id:
+					return false
 		status_lbl.text = "Turno %d: aspetto %s" % [R.round, ", ".join(missing.map(func(t): return _online_team_label(t)))]
 		await get_tree().create_timer(1.0).timeout
 	return false
@@ -783,7 +956,13 @@ func _build_panel() -> void:
 	panel.add_child(v)
 	status_lbl = Label.new()
 	status_lbl.add_theme_font_size_override("font_size", 22)
+	status_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	v.add_child(status_lbl)
+	# online: chi ha già scelto e chi stiamo aspettando
+	presence_box = VBoxContainer.new()
+	presence_box.add_theme_constant_override("separation", 3)
+	presence_box.visible = false
+	v.add_child(presence_box)
 	# comandi sotto il turno; la riga va a capo da sola se il pannello è stretto
 	var top := HFlowContainer.new()
 	top.add_theme_constant_override("h_separation", 8)
@@ -1129,12 +1308,24 @@ func _update_status() -> void:
 
 func _race_loop() -> void:
 	var my := race_id
+	presence_box.visible = false
 	while true:
 		R.round += 1
 		_update_status()
 		log_line("[b]Turno %d[/b]" % R.round)
 		if not online.is_empty():
 			online["turn_hash"] = R.state_hash()
+			online["snap"] = R._snap()
+			online["pre"] = await net.choices(online["code"], R.round)
+			if my != race_id:
+				return
+			if online.get("catchup", false) and not _online_all_posted(online["pre"]):
+				online["catchup"] = false
+				Engine.time_scale = 1.0
+				log_line("[color=#7FD17F]Sei rientrato nella corsa: si riprende dal turno %d.[/color]" % R.round)
+			online["wait_from"] = Time.get_ticks_msec()
+			_presence_show(online["pre"], false)
+			_online_presence(my, R.round)
 		var humans := 0
 		for t in R.teams:
 			if t["human"] and not R.active(t).is_empty():
@@ -1146,6 +1337,8 @@ func _race_loop() -> void:
 			var act: Array = R.active(t)
 			if act.is_empty():
 				continue
+			if not online.is_empty() and online["pre"].has(str(t["idx"])):
+				continue        # scelta già pubblicata: la si applica al momento della sincronizzazione
 			if t["human"] and cpu_thinking:
 				cpu_thinking = false
 				_update_status()
@@ -1797,6 +1990,10 @@ func _rider_cell_j(r: Dictionary) -> Control:
 	return h
 
 func _show_report() -> void:
+	Engine.time_scale = 1.0
+	if not online.is_empty():
+		net.remember_room("")
+		online["catchup"] = false
 	if online.get("role", "") == "host":
 		var code: String = online["code"]
 		get_tree().create_timer(20.0).timeout.connect(func(): net.close_room(code))
@@ -2007,9 +2204,14 @@ func _ask_menu() -> void:
 
 ## Torna alla scelta della corsa (non alla copertina), con le impostazioni e il percorso di prima.
 func _back_to_menu() -> void:
+	Engine.time_scale = 1.0
+	if not online.is_empty() and online_lbl:
+		if online.has("game") and not report.visible:
+			online_code.text = online["code"]
+			online_lbl.text = ("Sei uscito dalla corsa della stanza %s: premi «Entra» per rientrare. Gli altri ti aspettano: senza di te la corsa non va avanti." if online["role"] == "host" else "Sei uscito dalla corsa della stanza %s: premi «Entra» per rientrare. Intanto, dopo un minuto, per te gioca il computer.") % online["code"]
+		else:
+			online_lbl.text = "Sei uscito dalla stanza. Puoi crearne un'altra o entrare con un codice."
 	online = {}
-	if online_lbl:
-		online_lbl.text = "Sei uscito dalla stanza. Puoi crearne un'altra o entrare con un codice."
 	if is_instance_valid(menu_dialog):
 		menu_dialog.queue_free()
 	race_id += 1

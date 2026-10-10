@@ -39,6 +39,14 @@ apre il gioco (anche dal sito su GitHub Pages) e in cima al menu sceglie **Parti
   risolve il turno da sé. La partita è identica ovunque perché tutti usano lo stesso seme casuale
   e ogni mazzo si rimescola con un suo generatore: sul database passano solo le carte scelte. Le
   squadre del computer le gioca il dispositivo di chi ha creato la stanza.
+- Nella colonna di destra si vede chi ha già scelto le carte e chi si sta aspettando.
+- **Se cade la linea o si esce per sbaglio** si rientra con lo stesso codice e *Entra* (il codice
+  resta proposto nel menu): il gioco rigioca velocemente i turni passati e si riprende da quello
+  in corso. Il dispositivo ricorda chi sei anche se ricarichi la pagina; nel browser due schede
+  sono due giocatori diversi. Se hai chiuso del tutto il browser, rientri con **lo stesso nome**.
+- Se un giocatore non risponde per un minuto, al suo posto gioca il computer finché non rientra.
+  Chi ha creato la stanza deve restare collegato (gioca le squadre del computer): se esce, gli
+  altri lo aspettano finché non rientra.
 - In questa prima versione online: corsa singola (niente tour né fuga), schieramento casuale.
 - A ogni turno ogni dispositivo pubblica anche un'impronta dello stato: se due corse non
   coincidono più (per esempio con versioni diverse del gioco) la cronaca lo segnala.
@@ -47,13 +55,13 @@ apre il gioco (anche dal sito su GitHub Pages) e in cima al menu sceglie **Parti
 Le regole di sicurezza sono in `firebase/database.rules.json` e vanno pubblicate nella console
 (Realtime Database → Regole). In Authentication va attivato l'accesso *Anonimo*. Le regole
 permettono di leggere una stanza solo a chi ne conosce il codice, di configurarla e cancellarla
-solo a chi l'ha creata, e a ogni giocatore di scrivere una volta sola, a ogni turno, le carte
+solo a chi l'ha creata, di riprendere un posto lasciato libero (assente), e a ogni giocatore di scrivere una volta sola, a ogni turno, le carte
 della propria squadra.
 
 **Prove senza Firebase.** `tests/firebase_mock.py` è un finto Firebase locale. Con
 `FR_DB_URL`, `FR_AUTH_URL` e `FR_REFRESH_URL` che puntano lì, `tests/net_test.gd` prova il
 collegamento e le regole, `tests/online_ui.gd` gioca una corsa intera tra due istanze del gioco
-(host e ospite) e `tests/lockstep.gd` controlla senza rete che due dispositivi restino allineati.
+(host e ospite; con `FR_PHASE=drop` e poi `back` l'ospite esce a metà e rientra) e `tests/lockstep.gd` controlla senza rete che due dispositivi restino allineati.
 
 ## Squadre
 - Da 1 a 6 squadre: Rossi, Blu, Verdi, Neri, Rosa, Bianchi. Con più di 10 corridori
