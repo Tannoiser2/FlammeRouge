@@ -11,6 +11,7 @@ Applica una versione semplificata delle regole di firebase/database.rules.json:
 stanza creata una volta sola, posti occupabili solo se liberi (o dal proprio titolare o dall'host),
 carte di un turno scrivibili una volta sola dal titolare del posto o dall'host.
 """
+import gzip
 import json
 import sys
 import threading
@@ -103,8 +104,13 @@ class H(BaseHTTPRequestHandler):
 
     def _send(self, code, obj):
         body = json.dumps(obj).encode()
+        gz = "gzip" in (self.headers.get("Accept-Encoding") or "")
+        if gz:  # come i server di Google: risposta compressa se il client la accetta
+            body = gzip.compress(body)
         self.send_response(code)
         self._cors()
+        if gz:
+            self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -115,6 +121,7 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, PUT, POST, PATCH, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Expose-Headers", "*")
 
     def do_OPTIONS(self):
         self.send_response(204)
