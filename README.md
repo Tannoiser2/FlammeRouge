@@ -26,6 +26,35 @@ Android le usano senza altre impostazioni. Per iOS va indicata nelle opzioni d'e
   disattiva e resta disattivato finché non lo riaccendi.
 - **Tutto**: inquadra l'intero percorso.
 
+## Gioco online
+Si gioca a distanza con il proprio progetto Firebase (Realtime Database, piano gratuito). Ognuno
+apre il gioco (anche dal sito su GitHub Pages) e in cima al menu sceglie **Partita → Online**.
+
+- **Chi crea la stanza** imposta squadre e percorso come al solito: le squadre su *Giocatore*
+  diventano i posti per gli amici (la prima è la sua). Preme *Crea una stanza* e comunica il
+  codice di 4 lettere. Quando ci sono tutti preme *Inizia la corsa*: i posti rimasti liberi li
+  gioca il computer.
+- **Gli amici** scrivono il nome e il codice e premono *Entra*.
+- A ogni turno ognuno sceglie le sue carte; quando sono arrivate quelle di tutti, ogni dispositivo
+  risolve il turno da sé. La partita è identica ovunque perché tutti usano lo stesso seme casuale
+  e ogni mazzo si rimescola con un suo generatore: sul database passano solo le carte scelte. Le
+  squadre del computer le gioca il dispositivo di chi ha creato la stanza.
+- In questa prima versione online: corsa singola (niente tour né fuga), schieramento casuale.
+- A ogni turno ogni dispositivo pubblica anche un'impronta dello stato: se due corse non
+  coincidono più (per esempio con versioni diverse del gioco) la cronaca lo segnala.
+
+**Configurazione Firebase.** La configurazione pubblica del progetto è in `scripts/net.gd`.
+Le regole di sicurezza sono in `firebase/database.rules.json` e vanno pubblicate nella console
+(Realtime Database → Regole). In Authentication va attivato l'accesso *Anonimo*. Le regole
+permettono di leggere una stanza solo a chi ne conosce il codice, di configurarla e cancellarla
+solo a chi l'ha creata, e a ogni giocatore di scrivere una volta sola, a ogni turno, le carte
+della propria squadra.
+
+**Prove senza Firebase.** `tests/firebase_mock.py` è un finto Firebase locale. Con
+`FR_DB_URL`, `FR_AUTH_URL` e `FR_REFRESH_URL` che puntano lì, `tests/net_test.gd` prova il
+collegamento e le regole, `tests/online_ui.gd` gioca una corsa intera tra due istanze del gioco
+(host e ospite) e `tests/lockstep.gd` controlla senza rete che due dispositivi restino allineati.
+
 ## Squadre
 - Da 1 a 6 squadre: Rossi, Blu, Verdi, Neri, Rosa, Bianchi. Con più di 10 corridori
   serve la partenza di Peloton (faccia 1 o 1B).

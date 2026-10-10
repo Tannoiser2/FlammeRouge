@@ -16,23 +16,37 @@ var teams: Array = []     # [{name, color, human, riders:[]}]
 var riders: Array = []    # [{id, team, type "P"/"V", pos, lane, deck, recycled, hand, chosen}]
 var round := 0
 var rng := RandomNumberGenerator.new()
+var ai_rng := RandomNumberGenerator.new()   # solo per le scelte della CPU: non tocca il caso della corsa
 
 ## kinds: per ogni squadra "human", "cpu", "peloton" o "muscle".
 ## extra_exh: carte fatica iniziali per le squadre di giocatori (handicap o solitario).
-func setup(t: Track, kinds: Array, extra_exh := 0, random_start := true, carry: Array = []) -> void:
+## seed: con lo stesso seme (e le stesse scelte) la corsa è identica su ogni dispositivo (gioco online).
+func setup(t: Track, kinds: Array, extra_exh := 0, random_start := true, carry: Array = [], seed := 0) -> void:
 	track = t
-	rng.randomize()
+	if seed != 0:
+		rng.seed = seed
+	else:
+		rng.randomize()
+	ai_rng.randomize()
+	var base := rng.randi()
 	teams.clear()
 	riders.clear()
 	for i in kinds.size():
 		var kind: String = kinds[i]
 		var team := {"name": TEAM_NAMES[i], "color": TEAM_COLORS[i], "text": TEAM_TEXT[i],
 			"kind": kind, "human": kind == "human", "riders": [], "idx": i, "deck": []}
+		var tg := RandomNumberGenerator.new()
+		tg.seed = base + 104729 * (i + 1)
+		team["rng"] = tg
 		for typ in ["P", "V"]:
 			var r := {"id": riders.size(), "team": team, "type": typ, "pos": -1, "lane": 0,
 				"deck": _make_deck(typ), "recycled": [], "hand": [], "chosen": {},
 				"finished": false, "fin_round": 0, "fin_over": 0, "fin_lane": 0, "fin_place": 0,
 				"min": 0, "sec": 0, "tp": 0, "sprint": 0, "mountain": 0, "gone": false, "crashed": false}
+			# ogni mazzo si rimescola con il suo generatore: le pescate non dipendono dall'ordine in cui avvengono
+			var g := RandomNumberGenerator.new()
+			g.seed = base + 7919 * (r["id"] + 1)
+			r["rng"] = g
 			team["riders"].append(r)
 			riders.append(r)
 		if kind == "peloton":
@@ -108,6 +122,14 @@ func place_start(r: Dictionary, p: int) -> void:
 func ai_start_square(_r: Dictionary) -> int:
 	return front_slot()
 
+func _make_deck_with(typ: String, g: RandomNumberGenerator) -> Array:
+	var d: Array = []
+	for k in 3:
+		for v in (DECK_P if typ == "P" else DECK_V):
+			d.append({"v": v, "ex": false})
+	_shuffle(d, g)
+	return d
+
 func _make_deck(typ: String) -> Array:
 	var d: Array = []
 	for k in 3:
@@ -116,9 +138,11 @@ func _make_deck(typ: String) -> Array:
 	_shuffle(d)
 	return d
 
-func _shuffle(a: Array) -> void:
+func _shuffle(a: Array, g: RandomNumberGenerator = null) -> void:
+	if g == null:
+		g = rng
 	for i in range(a.size() - 1, 0, -1):
-		var j := rng.randi() % (i + 1)
+		var j := g.randi() % (i + 1)
 		var tmp = a[i]
 		a[i] = a[j]
 		a[j] = tmp
@@ -161,7 +185,7 @@ func draw_hand(r: Dictionary) -> Array:
 				break
 			r["deck"] = r["recycled"]
 			r["recycled"] = []
-			_shuffle(r["deck"])
+			_shuffle(r["deck"], r["rng"])
 		h.append(r["deck"].pop_back())
 	if h.is_empty():
 		h.append({"v": 2, "ex": true})
@@ -541,7 +565,7 @@ func check_refresh() -> Array:
 		r["deck"].append_array(got)
 		r["deck"].append_array(r["recycled"])
 		r["recycled"] = []
-		_shuffle(r["deck"])
+		_shuffle(r["deck"], r["rng"])
 		var tot := 0
 		for c in got:
 			tot += int(c["v"])
@@ -608,7 +632,7 @@ func ai_bid(r: Dictionary, round_k: int, so_far: int) -> Dictionary:
 	var hand: Array = r["hand"].duplicate()
 	hand.sort_custom(func(a, b): return a["v"] > b["v"])
 	if round_k == 0:
-		return hand[0] if hand[0]["v"] >= 6 or rng.randf() < 0.5 else hand[hand.size() / 2]
+		return hand[0] if hand[0]["v"] >= 6 or ai_rng.randf() < 0.5 else hand[hand.size() / 2]
 	return hand[0] if so_far >= 6 else hand[-1]
 
 ## Risolve l'asta: bids = [{rider, cards:[c, c]}]. Restituisce i vincitori nell'ordine di piazzamento.
@@ -641,16 +665,59 @@ func resolve_breakaway(bids: Array, winners_n: int) -> Array:
 	for r in riders:
 		r["deck"].append_array(r["recycled"])
 		r["recycled"] = []
-		_shuffle(r["deck"])
+		_shuffle(r["deck"], r["rng"])
 	return winners
+
+# ---------- gioco online: scelte codificate ----------
+
+## Codice di una carta scelta: valore, +100 se è una carta fatica.
+static func card_code(c: Dictionary) -> int:
+	return int(c["v"]) + (100 if c.get("ex", false) else 0)
+
+## Scelta di una squadra da pubblicare: {tipo corridore: codice carta}.
+func team_choice(t: Dictionary) -> Dictionary:
+	var out := {}
+	for r in t["riders"]:
+		if not r["finished"] and int(r.get("ct", -1)) == round:
+			out[r["type"]] = card_code(r["chosen"])
+	return out
+
+## Applica la scelta ricevuta da un altro dispositivo: si pesca la stessa mano (i mazzi sono identici)
+## e si gioca la carta con quel codice. Restituisce false se la carta non è nella mano (fuori sincronia).
+func apply_choice(t: Dictionary, choice: Dictionary) -> bool:
+	var ok := true
+	for r in t["riders"]:
+		if r["finished"] or int(r.get("ct", -1)) == round:
+			continue
+		if not choice.has(r["type"]):
+			ok = false
+			continue
+		draw_hand(r)
+		var code := int(choice[r["type"]])
+		var pick: Dictionary = {}
+		for c in r["hand"]:
+			if card_code(c) == code:
+				pick = c
+				break
+		if pick.is_empty():
+			ok = false
+			pick = r["hand"][0]
+		choose(r, pick)
+	return ok
+
+## Impronta dello stato della corsa, per controllare che i dispositivi siano allineati.
+func state_hash() -> int:
+	var parts: Array = [round]
+	for r in riders:
+		parts.append([r["pos"], r["lane"], r["finished"], r["deck"].map(card_code), r["recycled"].map(card_code)])
+	return hash(str(parts))
 
 ## Carte delle squadre automatiche (dopo che i giocatori hanno scelto).
 func dummy_cards() -> void:
 	for team in teams:
 		if team["kind"] == "peloton":
 			if team["deck"].is_empty():
-				var d := _make_deck("P")
-				_shuffle(d)
+				var d := _make_deck_with("P", team["rng"])
 				team["deck"] = d
 			var c: Dictionary = team["deck"].pop_back()
 			var a: Dictionary = team["riders"][0]
@@ -921,10 +988,11 @@ func _snap() -> Dictionary:
 		d["recycled"] = r["recycled"].duplicate()
 		d["hand"] = r["hand"].duplicate()
 		d["played"] = r.get("played", []).duplicate()
+		d["rng"] = r["rng"].state
 		rs.append(d)
 	var td: Array = []
 	for t in teams:
-		td.append(t["deck"].duplicate())
+		td.append([t["deck"].duplicate(), t["rng"].state])
 	return {"r": rs, "t": td, "round": round, "pg": podium_given, "pt": podium_teams.duplicate(), "rh": refresh_holder}
 
 func _restore(S: Dictionary) -> void:
@@ -940,8 +1008,10 @@ func _restore(S: Dictionary) -> void:
 		r["recycled"] = d["recycled"].duplicate()
 		r["hand"] = d["hand"].duplicate()
 		r["played"] = d["played"].duplicate()
+		r["rng"].state = d["rng"]
 	for i in teams.size():
-		teams[i]["deck"] = S["t"][i].duplicate()
+		teams[i]["deck"] = S["t"][i][0].duplicate()
+		teams[i]["rng"].state = S["t"][i][1]
 	round = S["round"]
 	podium_given = S["pg"]
 	podium_teams = S["pt"].duplicate()
@@ -1135,7 +1205,7 @@ func _ai_pick(r: Dictionary) -> Dictionary:
 			# restare agganciati alla testa della corsa (soprattutto lo sprinteur, per la volata)
 			var behind: int = maxi(0, int(head - track.prog(to)) - 1)
 			s -= behind * (0.55 if sprinter else 0.3)
-		s += rng.randf() * 0.35
+		s += ai_rng.randf() * 0.35
 		if s > best_s:
 			best_s = s
 			best = c
@@ -1149,7 +1219,7 @@ func _ai_pick_basic(r: Dictionary) -> Dictionary:
 		var m := eff_move(r, c["v"])
 		var land := landing(r, m)
 		var gain: int = int(track.prog(land["pos"]) - track.prog(r["pos"]))
-		var s := gain + rng.randf() * 1.2
+		var s := gain + ai_rng.randf() * 1.2
 		if track.prog(land["pos"]) > track.prog(track.finish):
 			s += 100.0 + gain
 		else:
