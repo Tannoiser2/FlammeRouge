@@ -711,7 +711,6 @@ func _menu_layout(vs: Vector2) -> void:
 		menu_scroll.position = Vector2(m, top + side_h + m)
 		menu_scroll.size = Vector2(vs.x - 2 * m, avail_h - side_h - m)
 		_menu_arrange(menu_scroll.size.x >= 900)
-	menu_cols.custom_minimum_size.x = menu_scroll.size.x - 14
 	menu_side.position = menu_side_rect.position
 	menu_side.size = menu_side_rect.size
 	_menu_hole.call_deferred()
