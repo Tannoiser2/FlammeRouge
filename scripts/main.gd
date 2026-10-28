@@ -8,7 +8,7 @@ var R: Rules
 var track: Track
 var ui: CanvasLayer
 var root: Control
-var setup_box: PanelContainer
+var setup_box: Control
 var panel: PanelContainer
 var status_lbl: Label
 var chips: HFlowContainer
@@ -43,7 +43,7 @@ var online_name: LineEdit
 var online_code: LineEdit
 var autoplay := false   # solo per le prove automatiche: le carte dei giocatori le sceglie il computer
 
-const VERSION := "0.43 (10 ottobre)"
+const VERSION := "0.44 (28 ottobre)"
 const LENGTH_KEYS := ["breve", "media", "lunga", "tutte"]
 const LENGTH_NAMES := ["Breve", "Media", "Completa", "Tutte le tessere"]
 const RELIEF := [0.0, 0.06, 0.1, 0.15]
@@ -77,7 +77,9 @@ func _ready() -> void:
 	root = Control.new()
 	root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_load_fonts()
 	var th := Theme.new()
+	th.default_font = font_body
 	th.default_font_size = 18
 	root.theme = th
 	ui.add_child(root)
@@ -106,9 +108,7 @@ func _set_anim(k: int) -> void:
 	board.step_time = ANIM_STEP[k]
 
 func _section(t: String) -> Label:
-	var l := _plain(t, 13, Color(1, 0.86, 0.55))
-	l.uppercase = true
-	return l
+	return _mlabel(t.to_upper(), 26, ROUGE, font_head)
 
 func _row(title: String, ctrl: Control) -> HBoxContainer:
 	var r := HBoxContainer.new()
@@ -133,7 +133,7 @@ func _seg(options: Array, selected: int, on_change: Callable, size := 15) -> HBo
 		b.focus_mode = Control.FOCUS_NONE
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		b.add_theme_font_size_override("font_size", size)
-		var on := _style(Color("#E8B84A"), 5)
+		var on := _style(ROUGE, 5)
 		on.set_content_margin_all(5)
 		var off := _style(Color(1, 1, 1, 0.08), 5)
 		off.set_content_margin_all(5)
@@ -143,51 +143,315 @@ func _seg(options: Array, selected: int, on_change: Callable, size := 15) -> HBo
 		b.add_theme_stylebox_override("hover_pressed", on)
 		b.add_theme_stylebox_override("normal", off)
 		b.add_theme_stylebox_override("hover", hov)
-		b.add_theme_color_override("font_pressed_color", Color("#1C2938"))
-		b.add_theme_color_override("font_hover_pressed_color", Color("#1C2938"))
+		b.add_theme_color_override("font_pressed_color", CARD)
+		b.add_theme_color_override("font_hover_pressed_color", CARD)
 		b.pressed.connect(func(): on_change.call(i))
 		box.add_child(b)
 	return box
 
-func _build_setup() -> void:
-	setup_box = PanelContainer.new()
-	setup_box.add_theme_stylebox_override("panel", _style(Color(0.08, 0.11, 0.15, 0.94)))
-	root.add_child(setup_box)
-	var scroll := ScrollContainer.new()
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	setup_box.add_child(scroll)
+# ---------- menu iniziale: poster ciclistico ----------
+
+const PAPER := Color("#EFE3C8")     # carta dei vecchi manifesti
+const CARD := Color("#FBF5E6")
+const INK := Color("#2A2420")
+const INK2 := Color("#6B5E52")
+const ROUGE := Color("#C42E26")     # il triangolo rosso dell'ultimo chilometro
+const ROUGE_HI := Color("#D9443A")
+const MENU_M := 22.0                # margine esterno
+const FRAME_B := 6                  # spessore della cornice dell'anteprima
+
+var font_title: Font
+var font_head: Font
+var font_body: Font
+var font_body_md: Font
+var menu_backdrop: Backdrop
+var menu_header: Control
+var menu_scroll: ScrollContainer
+var menu_cols: HBoxContainer
+var menu_col_a: VBoxContainer
+var menu_col_b: VBoxContainer
+var menu_cards: Array = []          # [scheda, colonna preferita (0 o 1)]
+var menu_side: VBoxContainer
+var menu_frame: PanelContainer
+var menu_side_rect := Rect2()
+var menu_two := false
+
+## Sfondo di carta del menu con una finestra trasparente sull'anteprima 3D.
+class Backdrop extends Control:
+	var hole := Rect2()
+	var paper := Color.WHITE
+	var ink := Color.BLACK
+	var road_y := -1.0
+	func _draw() -> void:
+		if hole.size == Vector2.ZERO:
+			draw_rect(Rect2(Vector2.ZERO, size), paper)
+		else:
+			draw_rect(Rect2(0, 0, size.x, hole.position.y), paper)
+			draw_rect(Rect2(0, hole.end.y, size.x, size.y - hole.end.y), paper)
+			draw_rect(Rect2(0, hole.position.y, hole.position.x, hole.size.y), paper)
+			draw_rect(Rect2(hole.end.x, hole.position.y, size.x - hole.end.x, hole.size.y), paper)
+		# sotto il titolo: un nastro d'asfalto con la linea di mezzeria
+		if road_y > 0:
+			var m := 22.0
+			draw_rect(Rect2(m, road_y, size.x - 2 * m, 10), ink)
+			var x := m + 6
+			while x < size.x - m - 20:
+				draw_rect(Rect2(x, road_y + 4, 22, 2), paper)
+				x += 40
+	func _has_point(p: Vector2) -> bool:
+		return not hole.has_point(p)
+
+## La bandierina rossa dell'ultimo chilometro (triangolo con la punta in basso).
+class Pennant extends Control:
+	var col := Color.RED
+	var ink := Color.BLACK
+	func _draw() -> void:
+		var w := size.x
+		var h := size.y
+		draw_rect(Rect2(0, 0, w, 3), ink)
+		draw_colored_polygon(PackedVector2Array([Vector2(2, 3), Vector2(w - 2, 3), Vector2(w * 0.5, h)]), col)
+
+func _load_fonts() -> void:
+	font_title = load("res://assets/font/AlfaSlabOne-Regular.ttf")
+	font_head = load("res://assets/font/BebasNeue-Regular.ttf")
+	var osw: FontFile = load("res://assets/font/Oswald.ttf")
+	var wght := TextServerManager.get_primary_interface().name_to_tag("wght")
+	var reg := FontVariation.new()
+	reg.base_font = osw
+	reg.variation_opentype = {wght: 400}
+	font_body = reg
+	var md := FontVariation.new()
+	md.base_font = osw
+	md.variation_opentype = {wght: 560}
+	font_body_md = md
+
+func _flat(bg: Color, radius := 4, border := Color.TRANSPARENT, bw := 0, pad := 8) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = bg
+	sb.set_corner_radius_all(radius)
+	sb.border_color = border
+	sb.set_border_width_all(bw)
+	sb.content_margin_left = pad + 2
+	sb.content_margin_right = pad + 2
+	sb.content_margin_top = pad * 0.6
+	sb.content_margin_bottom = pad * 0.6
+	return sb
+
+## Tema del menu: inchiostro su carta, campi di testo e menu a tendina chiari.
+func _menu_theme() -> Theme:
+	var th := Theme.new()
+	th.default_font = font_body
+	th.default_font_size = 19
+	th.set_color("font_color", "Label", INK)
+	for t in ["LineEdit", "OptionButton"]:
+		th.set_stylebox("normal", t, _flat(Color.WHITE, 4, Color(INK, 0.45), 2, 8))
+		th.set_stylebox("focus", t, _flat(Color(0, 0, 0, 0), 4, ROUGE, 2, 8))
+		th.set_color("font_color", t, INK)
+	th.set_stylebox("hover", "OptionButton", _flat(Color("#FFF9EC"), 4, INK, 2, 8))
+	th.set_stylebox("pressed", "OptionButton", _flat(Color("#FFF9EC"), 4, ROUGE, 2, 8))
+	th.set_color("font_hover_color", "OptionButton", INK)
+	th.set_color("font_pressed_color", "OptionButton", INK)
+	th.set_color("font_focus_color", "OptionButton", INK)
+	th.set_color("font_placeholder_color", "LineEdit", Color(INK, 0.4))
+	th.set_color("caret_color", "LineEdit", INK)
+	th.set_color("selection_color", "LineEdit", Color(ROUGE, 0.3))
+	th.set_stylebox("panel", "PopupMenu", _flat(CARD, 4, INK, 2, 6))
+	th.set_stylebox("hover", "PopupMenu", _flat(ROUGE, 3))
+	th.set_color("font_color", "PopupMenu", INK)
+	th.set_color("font_hover_color", "PopupMenu", CARD)
+	th.set_color("font_separator_color", "PopupMenu", ROUGE)
+	th.set_font("font_separator", "PopupMenu", font_head)
+	th.set_font_size("font_separator_size", "PopupMenu", 20)
+	th.set_font_size("font_size", "PopupMenu", 18)
+	var grab := _flat(Color(INK, 0.35), 4)
+	var grab_h := _flat(Color(INK, 0.6), 4)
+	var track := _flat(Color(INK, 0.08), 4)
+	track.content_margin_left = 4
+	track.content_margin_right = 4
+	th.set_stylebox("scroll", "VScrollBar", track)
+	th.set_stylebox("grabber", "VScrollBar", grab)
+	th.set_stylebox("grabber_highlight", "VScrollBar", grab_h)
+	th.set_stylebox("grabber_pressed", "VScrollBar", grab_h)
+	th.set_stylebox("normal", "Button", _flat(CARD, 4, Color(INK, 0.4), 2))
+	th.set_stylebox("hover", "Button", _flat(Color("#F3E6C8"), 4, INK, 2))
+	th.set_stylebox("pressed", "Button", _flat(ROUGE, 4, ROUGE, 2))
+	th.set_stylebox("focus", "Button", StyleBoxEmpty.new())
+	th.set_color("font_color", "Button", INK)
+	th.set_color("font_hover_color", "Button", INK)
+	th.set_color("font_pressed_color", "Button", CARD)
+	th.set_font("font", "Button", font_body_md)
+	th.set_stylebox("panel", "TooltipPanel", _flat(INK, 4, Color.TRANSPARENT, 0, 8))
+	th.set_color("font_color", "TooltipLabel", CARD)
+	return th
+
+func _mlabel(t: String, size := 19, col := INK, font: Font = null) -> Label:
+	var l := Label.new()
+	l.text = t
+	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_color_override("font_color", col)
+	if font:
+		l.add_theme_font_override("font", font)
+	return l
+
+## Gruppo di tasti a scelta singola del menu (grandi, a forma di pettorale). cols > 0: su più righe.
+func _mseg(options: Array, selected: int, on_change: Callable, cols := 0) -> Container:
+	var box: Container
+	if cols > 0:
+		var g := GridContainer.new()
+		g.columns = cols
+		g.add_theme_constant_override("h_separation", 5)
+		g.add_theme_constant_override("v_separation", 5)
+		box = g
+	else:
+		var h := HBoxContainer.new()
+		h.add_theme_constant_override("separation", 5)
+		box = h
+	var group := ButtonGroup.new()
+	for i in options.size():
+		var b := Button.new()
+		b.text = options[i]
+		b.toggle_mode = true
+		b.button_group = group
+		b.button_pressed = i == selected
+		b.focus_mode = Control.FOCUS_NONE
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.custom_minimum_size.y = 42
+		b.add_theme_font_size_override("font_size", 17)
+		b.add_theme_stylebox_override("normal", _flat(CARD, 4, Color(INK, 0.4), 2, 5))
+		b.add_theme_stylebox_override("hover", _flat(Color("#F3E6C8"), 4, INK, 2, 5))
+		b.add_theme_stylebox_override("pressed", _flat(ROUGE, 4, ROUGE, 2, 5))
+		b.add_theme_stylebox_override("hover_pressed", _flat(ROUGE_HI, 4, ROUGE_HI, 2, 5))
+		b.add_theme_color_override("font_hover_pressed_color", CARD)
+		b.pressed.connect(func(): on_change.call(i))
+		box.add_child(b)
+	return box
+
+## Riga del menu: nome a sinistra, scelta a destra, spiegazione piccola sotto (facoltativa).
+func _mrow(title: String, ctrl: Control, hint := "") -> Control:
 	var v := VBoxContainer.new()
-	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	v.add_theme_constant_override("separation", 9)
-	scroll.add_child(v)
-	# ----- partita online -----
-	v.add_child(_section("Partita"))
+	v.add_theme_constant_override("separation", 2)
+	var r := HBoxContainer.new()
+	r.add_theme_constant_override("separation", 10)
+	var l := _mlabel(title, 19, INK2)
+	l.custom_minimum_size.x = 112
+	l.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	r.add_child(l)
+	ctrl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	r.add_child(ctrl)
+	v.add_child(r)
+	if hint != "":
+		var h := _mlabel(hint, 15, Color(INK2, 0.85))
+		h.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		var pad := MarginContainer.new()
+		pad.add_theme_constant_override("margin_left", 122)
+		pad.add_child(h)
+		v.add_child(pad)
+	return v
+
+## Scheda del menu con titolo e bandierina; restituisce il contenitore in cui mettere le righe.
+func _mcard(title: String, col: int) -> VBoxContainer:
+	var pc := PanelContainer.new()
+	var sb := _flat(CARD, 6, Color(INK, 0.85), 2, 16)
+	sb.content_margin_top = 12
+	sb.content_margin_bottom = 16
+	sb.shadow_color = Color(INK, 0.18)
+	sb.shadow_size = 0
+	sb.shadow_offset = Vector2(4, 4)
+	sb.expand_margin_bottom = 0
+	pc.add_theme_stylebox_override("panel", sb)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 10)
+	pc.add_child(v)
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 10)
+	var pen := Pennant.new()
+	pen.col = ROUGE
+	pen.ink = INK
+	pen.custom_minimum_size = Vector2(22, 24)
+	pen.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	head.add_child(pen)
+	head.add_child(_mlabel(title.to_upper(), 30, INK, font_head))
+	v.add_child(head)
+	menu_cards.append([pc, col])
+	return v
+
+func _build_setup() -> void:
+	setup_box = Control.new()
+	setup_box.set_anchors_preset(Control.PRESET_FULL_RECT)
+	setup_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	setup_box.theme = _menu_theme()
+	root.add_child(setup_box)
+	menu_backdrop = Backdrop.new()
+	menu_backdrop.paper = PAPER
+	menu_backdrop.ink = INK
+	menu_backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
+	menu_backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+	setup_box.add_child(menu_backdrop)
+	# ----- titolo -----
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 16)
+	head.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var pen := Pennant.new()
+	pen.col = ROUGE
+	pen.ink = INK
+	pen.custom_minimum_size = Vector2(46, 52)
+	pen.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	head.add_child(pen)
+	var tv := VBoxContainer.new()
+	tv.add_theme_constant_override("separation", -6)
+	tv.add_child(_mlabel("ULTIMO CHILOMETRO", 42, INK, font_title))
+	tv.add_child(_mlabel("Flamme Rouge · versione digitale", 18, INK2))
+	head.add_child(tv)
+	menu_header = head
+	setup_box.add_child(head)
+	# ----- colonne delle schede -----
+	menu_scroll = ScrollContainer.new()
+	menu_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	setup_box.add_child(menu_scroll)
+	menu_cols = HBoxContainer.new()
+	menu_cols.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	menu_cols.add_theme_constant_override("separation", 18)
+	menu_scroll.add_child(menu_cols)
+	menu_col_a = VBoxContainer.new()
+	menu_col_b = VBoxContainer.new()
+	for c in [menu_col_a, menu_col_b]:
+		c.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		c.add_theme_constant_override("separation", 18)
+		menu_cols.add_child(c)
+	# ----- partita -----
+	var v := _mcard("Partita", 0)
 	online_box = VBoxContainer.new()
-	online_box.add_theme_constant_override("separation", 6)
+	online_box.add_theme_constant_override("separation", 8)
 	online_box.visible = false
-	v.add_child(_row("Dove", _seg(["Su questo dispositivo", "Online"], 0, func(k): online_box.visible = k == 1, 14)))
+	v.add_child(_mrow("Dove", _mseg(["Su questo dispositivo", "Online"], 0, func(k):
+		online_box.visible = k == 1
+		_menu_rebalance())))
 	online_name = LineEdit.new()
 	online_name.placeholder_text = "il tuo nome"
 	online_name.max_length = 20
-	online_box.add_child(_row("Il tuo nome", online_name))
+	online_box.add_child(_mrow("Il tuo nome", online_name))
 	var orow := HBoxContainer.new()
 	orow.add_theme_constant_override("separation", 6)
 	var create := Button.new()
 	create.text = "Crea una stanza"
+	create.custom_minimum_size.y = 42
 	create.pressed.connect(_online_create)
 	orow.add_child(create)
 	online_code = LineEdit.new()
 	online_code.placeholder_text = "codice"
 	online_code.max_length = 4
-	online_code.custom_minimum_size.x = 90
+	online_code.custom_minimum_size.x = 96
+	online_code.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	online_code.text_changed.connect(func(t): online_code.text = t.to_upper(); online_code.caret_column = t.length())
 	orow.add_child(online_code)
 	var join := Button.new()
 	join.text = "Entra"
+	join.custom_minimum_size = Vector2(90, 42)
 	join.pressed.connect(_online_join)
 	orow.add_child(join)
-	online_box.add_child(orow)
-	online_lbl = _label("Chi crea la stanza sceglie squadre e percorso qui sotto: le squadre impostate su Giocatore diventano i posti per gli amici, che entrano con il codice. Online la corsa è singola (niente tour né fuga) e lo schieramento è casuale.", 13, Color(1, 1, 1, 0.7))
+	online_box.add_child(_mrow("Stanza", orow))
+	online_lbl = _mlabel("Chi crea la stanza sceglie squadre e percorso: le squadre su Giocatore diventano i posti per gli amici, che entrano con il codice. Online la corsa è singola (niente tour né fuga) e lo schieramento è casuale.", 15, INK2)
+	online_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	online_box.add_child(online_lbl)
 	v.add_child(online_box)
 	var ses := _net().load_session()
@@ -195,26 +459,28 @@ func _build_setup() -> void:
 	if str(ses.get("room", "")) != "":
 		online_code.text = str(ses["room"])
 		online_lbl.text = "Eri nella stanza %s: scegli Online e premi «Entra» per rientrare." % ses["room"]
-	v.add_child(HSeparator.new())
 	# ----- squadre -----
-	v.add_child(_section("Squadre"))
+	v = _mcard("Squadre", 0)
 	var teams_box := VBoxContainer.new()
-	teams_box.add_theme_constant_override("separation", 5)
+	teams_box.add_theme_constant_override("separation", 6)
 	var holder := [null]
 	var fill_teams := func():
 		for c in teams_box.get_children():
 			c.queue_free()
 		for i in cfg["n"]:
 			var row := HBoxContainer.new()
-			var sw := ColorRect.new()
-			sw.color = Rules.TEAM_COLORS[i]
-			sw.custom_minimum_size = Vector2(16, 16)
-			sw.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-			row.add_child(sw)
-			var lb := _plain("  " + Rules.TEAM_NAMES[i], 16)
-			lb.custom_minimum_size.x = 90
+			row.add_theme_constant_override("separation", 10)
+			var chip := Panel.new()
+			var csb := _flat(Rules.TEAM_COLORS[i], 3, INK, 2)
+			chip.add_theme_stylebox_override("panel", csb)
+			chip.custom_minimum_size = Vector2(22, 28)
+			chip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			row.add_child(chip)
+			var lb := _mlabel(Rules.TEAM_NAMES[i], 20, INK, font_body_md)
+			lb.custom_minimum_size.x = 80
+			lb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 			row.add_child(lb)
-			var seg := _seg(["Giocatore", "Computer", "Peloton", "Muscle"], cfg["kind"][i], func(k):
+			var seg := _mseg(["Giocatore", "Computer", "Peloton", "Muscle"], cfg["kind"][i], func(k):
 				if k == 2:
 					# una sola Squadra Peloton: le altre tornano al computer
 					for j in cfg["kind"].size():
@@ -223,11 +489,12 @@ func _build_setup() -> void:
 					cfg["kind"][i] = k
 					holder[0].call()
 				else:
-					cfg["kind"][i] = k, 14)
+					cfg["kind"][i] = k)
 			seg.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 			row.add_child(seg)
 			teams_box.add_child(row)
-	v.add_child(_row("Squadre", _seg(["1", "2", "3", "4", "5", "6"], cfg["n"] - 1, func(k):
+		_menu_rebalance()
+	v.add_child(_mrow("Squadre", _mseg(["1", "2", "3", "4", "5", "6"], cfg["n"] - 1, func(k):
 		cfg["n"] = k + 1
 		fill_teams.call()
 		if not _custom_track():
@@ -235,57 +502,52 @@ func _build_setup() -> void:
 	v.add_child(teams_box)
 	holder[0] = fill_teams
 	fill_teams.call()
-	var exh := _seg(["0", "1", "2", "3", "4", "5", "6"], cfg["exh"], func(k): cfg["exh"] = k)
+	var exh := _mseg(["0", "1", "2", "3", "4", "5", "6"], cfg["exh"], func(k): cfg["exh"] = k)
 	exh.tooltip_text = "Carte fatica in più per ogni squadra di giocatori: handicap, o 3 nel solitario."
-	v.add_child(_row("Fatica iniziale", exh))
-	v.add_child(_row("Schieramento", _seg(["A scelta", "Casuale"], 0 if cfg["free_start"] else 1, func(k): cfg["free_start"] = k == 0)))
-	var cpu_seg := _seg(CPU_LEVEL_NAMES, cfg["cpu"], func(k): cfg["cpu"] = k)
+	v.add_child(_mrow("Fatica iniziale", exh))
+	v.add_child(_mrow("Schieramento", _mseg(["A scelta", "Casuale"], 0 if cfg["free_start"] else 1, func(k): cfg["free_start"] = k == 0)))
+	var cpu_seg := _mseg(CPU_LEVEL_NAMES, cfg["cpu"], func(k): cfg["cpu"] = k)
 	cpu_seg.tooltip_text = "Normale: la CPU valuta la carta sulla posizione di adesso. Difficile ed Esperto: per ogni carta immagina molti finali di corsa e sceglie quella che porta al piazzamento migliore (Esperto ne immagina di più e ci mette qualche istante in più)."
-	v.add_child(_row("Computer", cpu_seg))
-	var bw := _seg(["Nessuna", "Variante Breakaway"], 1 if cfg["breakaway"] else 0, func(k):
-		cfg["breakaway"] = k == 1
-		_refresh_preview())
-	bw.tooltip_text = "Prima della partenza un'asta manda in fuga uno o due corridori (regole di Peloton). La tessera 2 diventa la seconda del percorso."
-	v.add_child(_row("Fuga", bw))
-	v.add_child(HSeparator.new())
-	# ----- pista -----
-	v.add_child(_section("Pista"))
+	v.add_child(_mrow("Computer", cpu_seg))
+	# ----- percorso -----
+	v = _mcard("Percorso", 1)
 	var rand_box := VBoxContainer.new()
 	var stage_box := VBoxContainer.new()
 	var seq_box := VBoxContainer.new()
 	var tour_box := VBoxContainer.new()
 	for bx in [rand_box, stage_box, seq_box, tour_box]:
-		bx.add_theme_constant_override("separation", 8)
+		bx.add_theme_constant_override("separation", 10)
 	var show_mode := func(k):
 		cfg["mode"] = k
 		rand_box.visible = k == 0 or (k == 3 and TOURS[cfg["tour"]].has("random"))
 		stage_box.visible = k == 1
 		seq_box.visible = k == 2
 		tour_box.visible = k == 3
-	v.add_child(_row("Percorso", _seg(["Casuale", "Libretto", "Sequenza", "Tour"], cfg["mode"], func(k):
+		_menu_rebalance()
+	v.add_child(_mrow("Percorso", _mseg(["Casuale", "Libretto", "Sequenza", "Tour"], cfg["mode"], func(k):
 		show_mode.call(k)
 		if k == 0:
 			_preview()
 		elif k == 1:
 			_show_stage()
 		elif k == 3:
-			_show_tour_preview(), 14)))
+			_show_tour_preview())))
 	v.add_child(stage_box)
 	v.add_child(tour_box)
 	v.add_child(rand_box)
 	v.add_child(seq_box)
 	# casuale
-	rand_box.add_child(_row("Lunghezza", _seg(LENGTH_NAMES, cfg["length"], func(k):
+	rand_box.add_child(_mrow("Lunghezza", _mseg(["Breve", "Media", "Completa", "Tutte"], cfg["length"], func(k):
 		cfg["length"] = k
-		_preview(), 14)))
-	var pel_row := HBoxContainer.new()
-	rand_box.add_child(_row("Peloton", _seg(["Solo gioco base", "Anche tessere Peloton"], 1 if cfg["peloton"] else 0, func(k):
+		_preview())))
+	rand_box.add_child(_mrow("Tessere", _mseg(["Gioco base", "Anche Peloton"], 1 if cfg["peloton"] else 0, func(k):
 		cfg["peloton"] = k == 1
-		_preview(), 14)))
+		_preview())))
 	var again := Button.new()
 	again.text = "Un altro percorso"
+	again.custom_minimum_size.y = 42
 	again.pressed.connect(_preview)
-	rand_box.add_child(again)
+	rand_box.add_child(_mrow("", again))
 	# libretto
 	var sopt := OptionButton.new()
 	var last_group := ""
@@ -299,67 +561,98 @@ func _build_setup() -> void:
 		sopt.add_item(st["name"])
 		idx_map.append(i)
 	sopt.fit_to_longest_item = false
+	sopt.custom_minimum_size.y = 42
 	sopt.item_selected.connect(func(k):
 		if idx_map[k] >= 0:
 			cfg["stage"] = idx_map[k]
 			_show_stage())
 	sopt.select(1)
-	stage_box.add_child(_row("Tappa", sopt))
+	stage_box.add_child(_mrow("Tappa", sopt))
 	# sequenza
-	var hint := _label("Scrivi le facce in ordine, ad esempio a b c d e f … u. Maiuscola = lato scuro; Peloton 1 … 9, lato scuro 1B … 9B.", 14, Color(1, 1, 1, 0.7))
-	seq_box.add_child(hint)
 	var seq := LineEdit.new()
 	seq.placeholder_text = "a b c … u"
+	seq.custom_minimum_size.y = 42
 	seq.text_changed.connect(func(t): _preview_seq_live(t))
-	seq_box.add_child(seq)
+	seq_box.add_child(_mrow("Tessere", seq, "Scrivi le facce in ordine, ad esempio a b c d … u. Maiuscola = lato scuro; Peloton 1 … 9, lato scuro 1B … 9B."))
 	# tour
 	var topt := OptionButton.new()
 	for t in TOURS:
 		topt.add_item(t["name"])
 	topt.selected = cfg["tour"]
+	topt.custom_minimum_size.y = 42
 	topt.item_selected.connect(func(k):
 		cfg["tour"] = k
 		show_mode.call(3)
 		_show_tour_preview())
-	tour_box.add_child(_row("Tour", topt))
-	tour_box.add_child(_row("Fatica", _seg(["Metà passa alla tappa dopo", "Si riparte da zero"], 0 if cfg["carry"] else 1, func(k): cfg["carry"] = k == 0, 13)))
-	var rest := _seg(["Sì", "No"], 0 if cfg["rest"] else 1, func(k): cfg["rest"] = k == 0, 13)
-	rest.tooltip_text = "Nei tour da 15 tappe o più ci sono sempre due giorni di riposo (dopo la 9ª e la 15ª); nei tour più corti, uno a metà."
-	tour_box.add_child(_row("Giorno di riposo", rest))
-	var gts := _seg(["No", "Sì: arrivo largo, curva bagnata, rotonde"], 1 if cfg["gt"] else 0, func(k):
+	tour_box.add_child(_mrow("Tour", topt))
+	tour_box.add_child(_mrow("Fatica", _mseg(["Metà alla tappa dopo", "Da zero"], 0 if cfg["carry"] else 1, func(k): cfg["carry"] = k == 0)))
+	var rest := _mseg(["Sì", "No"], 0 if cfg["rest"] else 1, func(k): cfg["rest"] = k == 0)
+	tour_box.add_child(_mrow("Riposo", rest, "Nei tour da 15 tappe o più due giorni di riposo (dopo la 9ª e la 15ª); nei più corti uno a metà."))
+	# ----- regole ed espansioni -----
+	v = _mcard("Regole ed espansioni", 1)
+	var bw := _mseg(["Nessuna", "Breakaway"], 1 if cfg["breakaway"] else 0, func(k):
+		cfg["breakaway"] = k == 1
+		_refresh_preview())
+	v.add_child(_mrow("Fuga", bw, "Un'asta prima del via manda in fuga uno o due corridori (regole di Peloton)."))
+	var gts := _mseg(["No", "Sì"], 1 if cfg["gt"] else 0, func(k):
 		cfg["gt"] = k == 1
-		_refresh_preview(), 14)
-	gts.tooltip_text = "Tessere di Grand Tour: l'arrivo largo (v/V) sostituisce u/U; nei percorsi casuali possono comparire la curva stretta bagnata (z/Z) e le rotonde (x/X, y/Y)."
-	v.add_child(_row("Grand Tour", gts))
-	var met := _seg(["No", "Sì: vento e pioggia sui rettilinei"], 1 if cfg["meteo"] else 0, func(k): cfg["meteo"] = k == 1, 14)
-	met.tooltip_text = "Espansione Meteo: a ogni tappa i rettilinei (tranne partenza e arrivo) ricevono a caso vento laterale, a favore, contrario o pioggia."
-	v.add_child(_row("Meteo", met))
-	var sty := _seg(["Normale", "Crono squadre", "Crono individuale", "Tappa lunga"], cfg["stype"], func(k):
+		_refresh_preview())
+	v.add_child(_mrow("Grand Tour", gts, "Arrivo largo, curva bagnata e rotonde nei percorsi."))
+	var met := _mseg(["No", "Sì"], 1 if cfg["meteo"] else 0, func(k): cfg["meteo"] = k == 1)
+	v.add_child(_mrow("Meteo", met, "Vento laterale, a favore, contrario o pioggia sui rettilinei."))
+	var sty := _mseg(["Normale", "Crono squadre", "Crono individuale", "Tappa lunga"], cfg["stype"], func(k):
 		cfg["stype"] = k
-		_refresh_preview(), 13)
+		_refresh_preview(), 2)
 	sty.tooltip_text = "Tappe speciali del Grand Tour. Con 'Normale', le tappe del libretto che erano cronometro nel Tour 2018 lo restano."
-	v.add_child(_row("Tipo di tappa", sty))
-	# rilievo
-	v.add_child(_row("Rilievo", _seg(RELIEF_NAMES, cfg["relief"], func(k):
+	v.add_child(_mrow("Tipo di tappa", sty))
+	# ----- vista -----
+	v = _mcard("Vista", -1)
+	v.add_child(_mrow("Rilievo", _mseg(RELIEF_NAMES, cfg["relief"], func(k):
 		cfg["relief"] = k
 		if track != null:
 			track.compute_heights(RELIEF[k])
-			board.show_track(track), 14)))
-	v.add_child(_row("Animazioni", _seg(ANIM_NAMES, cfg["anim"], func(k): _set_anim(k), 14)))
+			board.show_track(track))))
+	v.add_child(_mrow("Animazioni", _mseg(ANIM_NAMES, cfg["anim"], func(k): _set_anim(k))))
 	show_mode.call(cfg["mode"])
+	# ----- colonna dell'anteprima -----
+	menu_side = VBoxContainer.new()
+	menu_side.add_theme_constant_override("separation", 10)
+	setup_box.add_child(menu_side)
+	var cap := HBoxContainer.new()
+	cap.add_child(_mlabel("IL PERCORSO", 30, INK, font_head))
+	var cap_hint := _mlabel("trascina per girare, rotella per lo zoom", 15, INK2)
+	cap_hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cap_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	cap_hint.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	cap.add_child(cap_hint)
+	menu_side.add_child(cap)
+	menu_frame = PanelContainer.new()
+	var fsb := StyleBoxFlat.new()
+	fsb.draw_center = false
+	fsb.border_color = INK
+	fsb.set_border_width_all(FRAME_B)
+	fsb.set_corner_radius_all(4)
+	menu_frame.add_theme_stylebox_override("panel", fsb)
+	menu_frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	menu_frame.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	menu_frame.item_rect_changed.connect(_menu_hole)
+	menu_side.add_child(menu_frame)
 	var msg := Label.new()
 	msg.name = "Msg"
 	msg.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	msg.add_theme_font_size_override("font_size", 15)
-	v.add_child(msg)
+	msg.add_theme_font_size_override("font_size", 17)
+	msg.custom_minimum_size.y = 54
+	menu_side.add_child(msg)
 	var start := Button.new()
-	start.text = "Inizia la corsa"
-	start.custom_minimum_size.y = 50
-	start.add_theme_font_size_override("font_size", 20)
-	var st_on := _style(Color("#C8323C"), 8)
-	start.add_theme_stylebox_override("normal", st_on)
-	var st_h := _style(Color("#DD4450"), 8)
-	start.add_theme_stylebox_override("hover", st_h)
+	start.text = "INIZIA LA CORSA"
+	start.custom_minimum_size.y = 74
+	start.add_theme_font_override("font", font_head)
+	start.add_theme_font_size_override("font_size", 40)
+	start.add_theme_stylebox_override("normal", _flat(ROUGE, 6, INK, 3))
+	start.add_theme_stylebox_override("hover", _flat(ROUGE_HI, 6, INK, 3))
+	start.add_theme_stylebox_override("pressed", _flat(INK, 6, INK, 3))
+	for c in ["font_color", "font_hover_color", "font_pressed_color"]:
+		start.add_theme_color_override(c, CARD)
 	start.pressed.connect(func():
 		if online.get("role", "") == "host":
 			_online_start()
@@ -367,8 +660,80 @@ func _build_setup() -> void:
 			_msg("Sei ospite: la corsa la avvia chi ha creato la stanza.")
 		else:
 			_start_race())
-	v.add_child(start)
-	v.add_child(_plain("Versione " + VERSION, 12, Color(1, 1, 1, 0.4)))
+	menu_side.add_child(start)
+	var ver := _mlabel("Versione " + VERSION, 14, Color(INK2, 0.8))
+	ver.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	menu_side.add_child(ver)
+
+## Dispone le schede su due colonne (schermo largo) o su una (stretto).
+func _menu_arrange(two: bool) -> void:
+	menu_two = two
+	var h := [0.0, 0.0]
+	for pair in menu_cards:
+		if pair[1] >= 0:
+			h[pair[1] if two else 0] += (pair[0] as Control).get_combined_minimum_size().y
+	for pair in menu_cards:
+		var card: Control = pair[0]
+		var col: int = pair[1]
+		if col < 0:
+			col = 0 if h[0] <= h[1] else 1       # scheda libera: nella colonna più corta
+		var dest: VBoxContainer = menu_col_b if two and col == 1 else menu_col_a
+		if card.get_parent() != dest:
+			if card.get_parent():
+				card.get_parent().remove_child(card)
+			dest.add_child(card)
+	menu_col_b.visible = two
+
+## Ridistribuisce le schede quando cambia l'altezza di una (squadre, percorso, online).
+func _menu_rebalance() -> void:
+	if menu_col_a != null:
+		(func(): _menu_arrange(menu_two)).call_deferred()
+
+## Posizione delle parti del menu: titolo in alto, schede a sinistra, anteprima e via a destra
+## (in verticale: anteprima sopra, schede sotto).
+func _menu_layout(vs: Vector2) -> void:
+	var m := MENU_M
+	var head_h := 78.0 if vs.x >= 700 else 64.0
+	menu_header.position = Vector2(m, m * 0.6)
+	menu_header.size = Vector2(vs.x - 2 * m, head_h)
+	menu_backdrop.road_y = m * 0.6 + head_h + 4
+	var top := m * 0.6 + head_h + 26
+	var avail_h := vs.y - top - m
+	if vs.x >= vs.y * 1.05:
+		var side_w := clampf(vs.x * 0.36, 340.0, 640.0)
+		menu_side_rect = Rect2(vs.x - m - side_w, top, side_w, avail_h)
+		menu_scroll.position = Vector2(m, top)
+		menu_scroll.size = Vector2(vs.x - side_w - 3 * m, avail_h)
+		_menu_arrange(menu_scroll.size.x >= 900)
+	else:
+		var side_h := clampf(avail_h * 0.42, 260.0, 560.0)
+		menu_side_rect = Rect2(m, top, vs.x - 2 * m, side_h)
+		menu_scroll.position = Vector2(m, top + side_h + m)
+		menu_scroll.size = Vector2(vs.x - 2 * m, avail_h - side_h - m)
+		_menu_arrange(menu_scroll.size.x >= 900)
+	menu_cols.custom_minimum_size.x = menu_scroll.size.x - 14
+	menu_side.position = menu_side_rect.position
+	menu_side.size = menu_side_rect.size
+	_menu_hole.call_deferred()
+
+## La finestra dell'anteprima: buco nella carta e inquadratura del percorso al suo interno.
+func _menu_hole() -> void:
+	if not setup_box.visible or menu_frame == null:
+		menu_backdrop.hole = Rect2()
+		menu_backdrop.queue_redraw()
+		return
+	# le scritte a capo possono allargare la colonna prima di conoscerne la larghezza: la si rimette a misura
+	if menu_side.size != menu_side_rect.size:
+		menu_side.size = menu_side_rect.size
+	var r := menu_frame.get_global_rect().grow(-FRAME_B + 1)
+	menu_backdrop.hole = r
+	menu_backdrop.queue_redraw()
+	var vs := get_viewport().get_visible_rect().size
+	var c := r.get_center() / vs
+	board.screen_shift = Vector2(1.0 - 2.0 * c.x, 1.0 - 2.0 * c.y)
+	board.view_free = r.size / vs
+	if track != null and not panel.visible:
+		board.fit_view()
 
 # ---------- gioco online ----------
 
@@ -948,7 +1313,7 @@ func _show_preview_raw(seq: Array, check := true, title := "") -> void:
 
 func _build_panel() -> void:
 	panel = PanelContainer.new()
-	panel.add_theme_stylebox_override("panel", _style(Color(0.08, 0.11, 0.15, 0.9), 0))
+	panel.add_theme_stylebox_override("panel", _style(Color(INK, 0.94), 0))
 	panel.visible = false
 	root.add_child(panel)
 	var v := VBoxContainer.new()
@@ -1019,35 +1384,36 @@ func _build_panel() -> void:
 
 func _build_report() -> void:
 	report = PanelContainer.new()
-	report.add_theme_stylebox_override("panel", _style(Color(0.08, 0.11, 0.15, 1.0)))
+	var rsb := _flat(PAPER, 8, INK, 3, 20)
+	rsb.content_margin_top = 16
+	report.add_theme_stylebox_override("panel", rsb)
+	report.theme = setup_box.theme
 	report.visible = false
 	root.add_child(report)
 
 func _build_overlay() -> void:
 	overlay = PanelContainer.new()
-	overlay.add_theme_stylebox_override("panel", _style(Color(0.08, 0.11, 0.15, 0.97)))
+	overlay.add_theme_stylebox_override("panel", _style(Color(INK, 0.97)))
 	overlay.visible = false
 	root.add_child(overlay)
 
 func _layout() -> void:
 	var vs := get_viewport().get_visible_rect().size
-	if vs.x >= vs.y:
-		var sw: float = clampf(vs.x * 0.42, 440.0, 600.0)
-		setup_box.position = Vector2(16, 16)
-		setup_box.size = Vector2(sw, vs.y - 32)
-	else:
-		setup_box.position = Vector2(12, vs.y * 0.42)
-		setup_box.size = Vector2(vs.x - 24, vs.y * 0.58 - 12)
+	_menu_layout(vs)
 	if vs.x >= vs.y:
 		var w := clampf(vs.x * 0.3, 340, 430)
 		panel.position = Vector2(vs.x - w, 0)
 		panel.size = Vector2(w, vs.y)
-		board.screen_shift = Vector2(w / vs.x, 0) if panel.visible else Vector2(-(setup_box.size.x + 16.0) / vs.x, 0)
+		if panel.visible:
+			board.screen_shift = Vector2(w / vs.x, 0)
+			board.view_free = Vector2.ZERO
 	else:
 		var h := vs.y * 0.46
 		panel.position = Vector2(0, vs.y - h)
 		panel.size = Vector2(vs.x, h)
-		board.screen_shift = Vector2(0, h / vs.y) if panel.visible else Vector2(0, -0.58)
+		if panel.visible:
+			board.screen_shift = Vector2(0, h / vs.y)
+			board.view_free = Vector2.ZERO
 	if report:
 		report.position = Vector2(16, 16)
 		report.size = vs - Vector2(32, 32)
@@ -2040,8 +2406,17 @@ func _show_report() -> void:
 	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	v.add_theme_constant_override("separation", 12)
 	sc.add_child(v)
-	v.add_child(_plain(stage_title, 26))
-	v.add_child(_plain("Vince il %s in %d turni." % [Rules.rider_name(rank[0]), rank[0]["fin_round"]], 18, Color(1, 0.86, 0.55)))
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 14)
+	var pen := Pennant.new()
+	pen.col = ROUGE
+	pen.ink = INK
+	pen.custom_minimum_size = Vector2(34, 40)
+	pen.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	head.add_child(pen)
+	head.add_child(_mlabel(stage_title.to_upper(), 46, INK, font_title))
+	v.add_child(head)
+	v.add_child(_mlabel("Vince il %s in %d turni." % [Rules.rider_name(rank[0]), rank[0]["fin_round"]], 24, ROUGE, font_body_md))
 	# ordine d'arrivo | squadre
 	var rows: Array = []
 	for i in rank.size():
@@ -2127,11 +2502,17 @@ func _best_last(team_idx: int) -> int:
 func _big_button(t: String, col: Color) -> Button:
 	var b := Button.new()
 	b.text = t
-	b.custom_minimum_size = Vector2(190, 48)
-	b.add_theme_font_size_override("font_size", 18)
-	b.add_theme_stylebox_override("normal", _style(col, 8))
-	b.add_theme_stylebox_override("hover", _style(col.lightened(0.15), 8))
-	b.add_theme_stylebox_override("pressed", _style(col.darkened(0.15), 8))
+	b.custom_minimum_size = Vector2(230, 58)
+	b.add_theme_font_override("font", font_head)
+	b.add_theme_font_size_override("font_size", 28)
+	var red := col.a > 0.9
+	var bg: Color = ROUGE if red else CARD
+	b.add_theme_stylebox_override("normal", _flat(bg, 6, INK, 3))
+	b.add_theme_stylebox_override("hover", _flat(ROUGE_HI if red else Color("#F3E6C8"), 6, INK, 3))
+	b.add_theme_stylebox_override("pressed", _flat(INK, 6, INK, 3))
+	for c in ["font_color", "font_hover_color", "font_focus_color"]:
+		b.add_theme_color_override(c, CARD if red else INK)
+	b.add_theme_color_override("font_pressed_color", CARD)
 	return b
 
 ## Due colonne affiancate, ognuna con titolo di sezione e tabella.
@@ -2150,7 +2531,7 @@ func _two_cols(left: Array, right: Array) -> HBoxContainer:
 ## Classifiche del tour: generale a sinistra, sprint e montagna a destra.
 func _tour_tables(v: VBoxContainer) -> void:
 	var last: bool = tour["idx"] >= tour["stages"].size() - 1
-	v.add_child(_plain("Classifiche dopo %d %s su %d%s" % [tour["idx"] + 1, "tappa" if tour["idx"] == 0 else "tappe", tour["stages"].size(), " (finali)" if last else ""], 22, Color(1, 0.86, 0.55)))
+	v.add_child(_mlabel("Classifiche dopo %d %s su %d%s" % [tour["idx"] + 1, "tappa" if tour["idx"] == 0 else "tappe", tour["stages"].size(), " (finali)" if last else ""], 26, ROUGE, font_body_md))
 	var gc := _gc_order()
 	var rows: Array = []
 	var b0: int = tour["times"][gc[0]]

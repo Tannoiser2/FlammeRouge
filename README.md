@@ -9,6 +9,16 @@ Apri la cartella con Godot (testato con 4.3 e 4.7: Importa → project.godot) e 
 All'avvio compare la copertina (`assets/copertina.webp`, e `copertina_avvio.png` per il
 caricamento di Godot); un clic, un tocco o un tasto portano al menu.
 
+## Menu
+Il menu è un manifesto ciclistico d'epoca: carta color crema, inchiostro scuro e il triangolo
+rosso dell'ultimo chilometro. Le scelte sono raccolte in schede grandi (Partita, Squadre, Percorso,
+Regole ed espansioni, Vista), su due colonne negli schermi larghi e su una in quelli stretti; a
+destra (in verticale: sopra) la finestra con l'anteprima 3D del percorso, che si gira e si ingrandisce
+col mouse, e il tasto **Inizia la corsa**. Il resoconto di fine tappa usa la stessa grafica.
+
+Caratteri (licenza SIL Open Font, testi in `assets/font/`): Alfa Slab One per il titolo, Bebas Neue
+per i titoli delle schede e i tasti grandi, Oswald per tutto il resto.
+
 ## Icona dell'app
 Viene dalla copertina, in tre formati in `assets/`:
 - `icona.png`: icona del progetto e della finestra;
