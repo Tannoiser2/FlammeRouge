@@ -18,6 +18,7 @@ var dist := 14.0
 var follow := true
 var _drag := 0
 var screen_shift := Vector2.ZERO
+var view_free := Vector2.ZERO     # parte dello schermo libera per la pista (0 = calcolata da screen_shift)
 var pick_squares: Array = []     # caselle cliccabili (schieramento)
 var markers: Array = []
 var _press := Vector2.ZERO
@@ -578,6 +579,9 @@ func fit_view() -> void:
 	var t := tan(deg_to_rad(cam.fov * 0.5))
 	var free_x: float = maxf(0.3, 1.0 - absf(screen_shift.x))
 	var free_y: float = maxf(0.3, 1.0 - absf(screen_shift.y))
+	if view_free != Vector2.ZERO:
+		free_x = maxf(0.1, view_free.x)
+		free_y = maxf(0.1, view_free.y)
 	var need_w := bb.size.x / (2.0 * t * aspect * free_x)
 	var need_h := bb.size.y / (2.0 * t * free_y * sin(pitch))
 	dist = clampf(maxf(need_w, need_h) * 1.08, 6.0, 160.0)
